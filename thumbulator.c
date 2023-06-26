@@ -608,7 +608,7 @@ int execute ( void )
     unsigned int rm,rd,rn,rs;
     unsigned int op;
 
-    char *sym;
+    char *sym = NULL;
 
 //if(fetches>400000) return(1);
 
@@ -686,7 +686,6 @@ int execute ( void )
 if(DISS) {
         fprintf(stderr,"--- 0x%08X: 0x%04X ",(pc-4),inst);
         sym = get_sym(pc-4);
-        if (sym) fprintf(stderr,"/%s/ ",sym);
     }
 
 if(output_vcd)
@@ -709,7 +708,7 @@ if(output_vcd)
     {
         rd=(inst>>0)&0x07;
         rm=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"adc r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"adc   r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra+rb;
@@ -719,7 +718,7 @@ if(DISS) fprintf(stderr,"adc r%u,r%u\n",rd,rm);
         do_zflag(rc);
         if(cpsr&CPSR_C) { do_cflag(ra,rb,1); do_vflag(ra,rb,1); }
         else            { do_cflag(ra,rb,0); do_vflag(ra,rb,0); }
-        return(0);
+        goto Return;
     }
 
     //ADD(1) small immediate two registers
@@ -730,7 +729,7 @@ if(DISS) fprintf(stderr,"adc r%u,r%u\n",rd,rm);
         rb=(inst>>6)&0x7;
         if(rb)
         {
-if(DISS) fprintf(stderr,"adds r%u,r%u,#0x%X\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"adds  r%u,r%u,#0x%X",rd,rn,rb);
             ra=read_register(rn);
             rc=ra+rb;
 //fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
@@ -739,7 +738,7 @@ if(DISS) fprintf(stderr,"adds r%u,r%u,#0x%X\n",rd,rn,rb);
             do_zflag(rc);
             do_cflag(ra,rb,0);
             do_vflag(ra,rb,0);
-            return(0);
+            goto Return;
         }
         else
         {
@@ -752,7 +751,7 @@ if(DISS) fprintf(stderr,"adds r%u,r%u,#0x%X\n",rd,rn,rb);
     {
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x7;
-if(DISS) fprintf(stderr,"adds r%u,#0x%02X\n",rd,rb);
+if(DISS) fprintf(stderr,"adds  r%u,#0x%02X",rd,rb);
         ra=read_register(rd);
         rc=ra+rb;
         write_register(rd,rc);
@@ -760,7 +759,7 @@ if(DISS) fprintf(stderr,"adds r%u,#0x%02X\n",rd,rb);
         do_zflag(rc);
         do_cflag(ra,rb,0);
         do_vflag(ra,rb,0);
-        return(0);
+        goto Return;
     }
 
     //ADD(3) three registers
@@ -769,7 +768,7 @@ if(DISS) fprintf(stderr,"adds r%u,#0x%02X\n",rd,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"adds r%u,r%u,r%u\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"adds  r%u,r%u,r%u",rd,rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra+rb;
@@ -778,7 +777,7 @@ if(DISS) fprintf(stderr,"adds r%u,r%u,r%u\n",rd,rn,rm);
         do_zflag(rc);
         do_cflag(ra,rb,0);
         do_vflag(ra,rb,0);
-        return(0);
+        goto Return;
     }
 
     //ADD(4) two registers one or both high no flags
@@ -791,7 +790,7 @@ if(DISS) fprintf(stderr,"adds r%u,r%u,r%u\n",rd,rn,rm);
         rd=(inst>>0)&0x7;
         rd|=(inst>>4)&0x8;
         rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"add r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra+rb;
@@ -807,7 +806,7 @@ if(DISS) fprintf(stderr,"add r%u,r%u\n",rd,rm);
         }
 //fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //ADD(5) rd = pc plus immediate
@@ -816,11 +815,11 @@ if(DISS) fprintf(stderr,"add r%u,r%u\n",rd,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x7;
         rb<<=2;
-if(DISS) fprintf(stderr,"add r%u,PC,#0x%02X\n",rd,rb);
+if(DISS) fprintf(stderr,"add   r%u,PC,#0x%02X",rd,rb);
         ra=read_register(15);
         rc=(ra&(~3))+rb;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //ADD(6) rd = sp plus immediate
@@ -829,11 +828,11 @@ if(DISS) fprintf(stderr,"add r%u,PC,#0x%02X\n",rd,rb);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x7;
         rb<<=2;
-if(DISS) fprintf(stderr,"add r%u,SP,#0x%02X\n",rd,rb);
+if(DISS) fprintf(stderr,"add   r%u,SP,#0x%02X",rd,rb);
         ra=read_register(13);
         rc=ra+rb;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //ADD(7) sp plus immediate
@@ -841,11 +840,11 @@ if(DISS) fprintf(stderr,"add r%u,SP,#0x%02X\n",rd,rb);
     {
         rb=(inst>>0)&0x7F;
         rb<<=2;
-if(DISS) fprintf(stderr,"add SP,#0x%02X\n",rb);
+if(DISS) fprintf(stderr,"add   SP,#0x%02X",rb);
         ra=read_register(13);
         rc=ra+rb;
         write_register(13,rc);
-        return(0);
+        goto Return;
     }
 
     //AND
@@ -853,14 +852,14 @@ if(DISS) fprintf(stderr,"add SP,#0x%02X\n",rb);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"ands r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"ands  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra&rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //ASR(1) two register immediate
@@ -869,7 +868,7 @@ if(DISS) fprintf(stderr,"ands r%u,r%u\n",rd,rm);
         rd=(inst>>0)&0x07;
         rm=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"asrs r%u,r%u,#0x%X\n",rd,rm,rb);
+if(DISS) fprintf(stderr,"asrs  r%u,r%u,#0x%X",rd,rm,rb);
         rc=read_register(rm);
         if(rb==0)
         {
@@ -897,7 +896,7 @@ if(DISS) fprintf(stderr,"asrs r%u,r%u,#0x%X\n",rd,rm,rb);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //ASR(2) two register
@@ -905,7 +904,7 @@ if(DISS) fprintf(stderr,"asrs r%u,r%u,#0x%X\n",rd,rm,rb);
     {
         rd=(inst>>0)&0x07;
         rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"asrs r%u,r%u\n",rd,rs);
+if(DISS) fprintf(stderr,"asrs  r%u,r%u",rd,rs);
         rc=read_register(rd);
         rb=read_register(rs);
         rb&=0xFF;
@@ -938,7 +937,7 @@ if(DISS) fprintf(stderr,"asrs r%u,r%u\n",rd,rs);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //B(1) conditional branch
@@ -953,89 +952,89 @@ if(DISS) fprintf(stderr,"asrs r%u,r%u\n",rd,rs);
         switch(op)
         {
             case 0x0: //b eq  z set
-if(DISS) fprintf(stderr,"beq 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"beq   0x%08X",rb-3);
                 if(cpsr&CPSR_Z)
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x1: //b ne  z clear
-if(DISS) fprintf(stderr,"bne 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bne   0x%08X",rb-3);
                 if(!(cpsr&CPSR_Z))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x2: //b cs c set
-if(DISS) fprintf(stderr,"bcs 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bcs   0x%08X",rb-3);
                 if(cpsr&CPSR_C)
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x3: //b cc c clear
-if(DISS) fprintf(stderr,"bcc 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bcc   0x%08X",rb-3);
                 if(!(cpsr&CPSR_C))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x4: //b mi n set
-if(DISS) fprintf(stderr,"bmi 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bmi   0x%08X",rb-3);
                 if(cpsr&CPSR_N)
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x5: //b pl n clear
-if(DISS) fprintf(stderr,"bpl 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bpl   0x%08X",rb-3);
                 if(!(cpsr&CPSR_N))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
 
             case 0x6: //b vs v set
-if(DISS) fprintf(stderr,"bvs 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bvs   0x%08X",rb-3);
                 if(cpsr&CPSR_V)
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x7: //b vc v clear
-if(DISS) fprintf(stderr,"bvc 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bvc   0x%08X",rb-3);
                 if(!(cpsr&CPSR_V))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
 
             case 0x8: //b hi c set z clear
-if(DISS) fprintf(stderr,"bhi 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bhi   0x%08X",rb-3);
                 if((cpsr&CPSR_C)&&(!(cpsr&CPSR_Z)))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0x9: //b ls c clear or z set
-if(DISS) fprintf(stderr,"bls 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bls   0x%08X",rb-3);
                 if((cpsr&CPSR_Z)||(!(cpsr&CPSR_C)))
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0xA: //b ge N == V
-if(DISS) fprintf(stderr,"bge 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bge   0x%08X",rb-3);
                 ra=0;
                 if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
                 if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
@@ -1043,10 +1042,10 @@ if(DISS) fprintf(stderr,"bge 0x%08X\n",rb-3);
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0xB: //b lt N != V
-if(DISS) fprintf(stderr,"blt 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"blt   0x%08X",rb-3);
                 ra=0;
                 if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
                 if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
@@ -1054,10 +1053,10 @@ if(DISS) fprintf(stderr,"blt 0x%08X\n",rb-3);
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0xC: //b gt Z==0 and N == V
-if(DISS) fprintf(stderr,"bgt 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bgt   0x%08X",rb-3);
                 ra=0;
                 if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
                 if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
@@ -1066,10 +1065,10 @@ if(DISS) fprintf(stderr,"bgt 0x%08X\n",rb-3);
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0xD: //b le Z==1 or N != V
-if(DISS) fprintf(stderr,"ble 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
                 ra=0;
                 if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
                 if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
@@ -1078,7 +1077,7 @@ if(DISS) fprintf(stderr,"ble 0x%08X\n",rb-3);
                 {
                     write_register(15,rb);
                 }
-                return(0);
+                goto Return;
 
             case 0xE:
                 //undefined instruction
@@ -1097,9 +1096,9 @@ if(DISS) fprintf(stderr,"ble 0x%08X\n",rb-3);
         rb<<=1;
         rb+=pc;
         rb+=2;
-if(DISS) fprintf(stderr,"B 0x%08X\n",rb-4);
+if(DISS) fprintf(stderr,"b     0x%08X",rb-4);
         write_register(15,rb);
-        return(0);
+        goto Return;
     }
 
     //BIC
@@ -1107,14 +1106,14 @@ if(DISS) fprintf(stderr,"B 0x%08X\n",rb-4);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"bics r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra&(~rb);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //BKPT
@@ -1147,10 +1146,10 @@ if(DISS) fprintf(stderr,"\n");
             rb+=(inst&((1<<11)-1))<<1;;
             rb+=2;
 
-if(DISS) fprintf(stderr,"bl 0x%08X\n",rb-2);
+if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
             write_register(14,(pc-2)|1);
             write_register(15,rb);
-            return(0);
+            goto Return;
         }
         else
         if((inst&0x1800)==0x0800) //H=b01
@@ -1165,10 +1164,10 @@ if(DISS) fprintf(stderr,"bl 0x%08X\n",rb-2);
 
 printf("hello\n");
 
-if(DISS) fprintf(stderr,"bl 0x%08X\n",rb-3);
+if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
             write_register(14,(pc-2)|1);
             write_register(15,rb);
-            return(0);
+            goto Return;
 
 
 
@@ -1179,7 +1178,7 @@ if(DISS) fprintf(stderr,"bl 0x%08X\n",rb-3);
     if((inst&0xFF87)==0x4780)
     {
         rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"blx r%u\n",rm);
+if(DISS) fprintf(stderr,"blx   r%u",rm);
         rc=read_register(rm);
 //fprintf(stderr,"blx r%u 0x%X 0x%X\n",rm,rc,pc);
         rc+=2;
@@ -1188,11 +1187,11 @@ if(DISS) fprintf(stderr,"blx r%u\n",rm);
             write_register(14,(pc-2)|1);
             rc&=~1;
             write_register(15,rc);
-            return(0);
+            goto Return;
         }
         else
         {
-            fprintf(stderr,"cannot branch to arm 0x%08X 0x%04X\n",pc,inst);
+            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
             return(1);
         }
     }
@@ -1201,7 +1200,7 @@ if(DISS) fprintf(stderr,"blx r%u\n",rm);
     if((inst&0xFF87)==0x4700)
     {
         rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"bx r%u\n",rm);
+if(DISS) fprintf(stderr,"bx    r%u",rm);
         rc=read_register(rm);
         rc+=2;
 //fprintf(stderr,"bx r%u 0x%X 0x%X\n",rm,rc,pc);
@@ -1209,11 +1208,11 @@ if(DISS) fprintf(stderr,"bx r%u\n",rm);
         {
             rc&=~1;
             write_register(15,rc);
-            return(0);
+            goto Return;
         }
         else
         {
-            fprintf(stderr,"cannot branch to arm 0x%08X 0x%04X\n",pc,inst);
+            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
             return(1);
         }
     }
@@ -1223,7 +1222,7 @@ if(DISS) fprintf(stderr,"bx r%u\n",rm);
     {
         rn=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmns r%u,r%u\n",rn,rm);
+if(DISS) fprintf(stderr,"cmns  r%u,r%u",rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra+rb;
@@ -1231,7 +1230,7 @@ if(DISS) fprintf(stderr,"cmns r%u,r%u\n",rn,rm);
         do_zflag(rc);
         do_cflag(ra,rb,0);
         do_vflag(ra,rb,0);
-        return(0);
+        goto Return;
     }
 
     //CMP(1) compare immediate
@@ -1239,7 +1238,7 @@ if(DISS) fprintf(stderr,"cmns r%u,r%u\n",rn,rm);
     {
         rb=(inst>>0)&0xFF;
         rn=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"cmp r%u,#0x%02X\n",rn,rb);
+if(DISS) fprintf(stderr,"cmp   r%u,#0x%02X",rn,rb);
         ra=read_register(rn);
         rc=ra-rb;
 //fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
@@ -1247,7 +1246,7 @@ if(DISS) fprintf(stderr,"cmp r%u,#0x%02X\n",rn,rb);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //CMP(2) compare register
@@ -1255,7 +1254,7 @@ if(DISS) fprintf(stderr,"cmp r%u,#0x%02X\n",rn,rb);
     {
         rn=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmps r%u,r%u\n",rn,rm);
+if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra-rb;
@@ -1264,7 +1263,7 @@ if(DISS) fprintf(stderr,"cmps r%u,r%u\n",rn,rm);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //CMP(3) compare high register
@@ -1281,7 +1280,7 @@ if(DISS) fprintf(stderr,"cmps r%u,r%u\n",rn,rm);
             //UNPREDICTABLE
         }
         rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"cmps r%u,r%u\n",rn,rm);
+if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra-rb;
@@ -1289,13 +1288,13 @@ if(DISS) fprintf(stderr,"cmps r%u,r%u\n",rn,rm);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //CPS
     if((inst&0xFFE8)==0xB660)
     {
-if(DISS) fprintf(stderr,"cps TODO\n");
+if(DISS) fprintf(stderr,"cps   TODO\n");
         return(1);
     }
 
@@ -1306,7 +1305,7 @@ if(DISS) fprintf(stderr,"cps TODO\n");
         //going to let mov handle high registers
         rd=(inst>>0)&0x7; //mov handles the high registers
         rm=(inst>>3)&0x7; //mov handles the high registers
-if(DISS) fprintf(stderr,"cpy r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
         rc=read_register(rm);
         //if(rd==15) //mov handles the high registers like r15
         //{
@@ -1314,7 +1313,7 @@ if(DISS) fprintf(stderr,"cpy r%u,r%u\n",rd,rm);
             //rc+=2; //The program counter is special
         //}
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //EOR
@@ -1322,14 +1321,14 @@ if(DISS) fprintf(stderr,"cpy r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"eors r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"eors  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra^rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //LDMIA
@@ -1338,7 +1337,7 @@ if(DISS) fprintf(stderr,"eors r%u,r%u\n",rd,rm);
         rn=(inst>>8)&0x7;
 if(DISS)
 {
-    fprintf(stderr,"ldmia r%u!,{",rn);
+    fprintf(stderr,"ldmia  r%u!,{",rn);
     for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
     {
         if(inst&rb)
@@ -1348,7 +1347,7 @@ if(DISS)
             rc++;
         }
     }
-    fprintf(stderr,"}\n");
+    fprintf(stderr,"}");
 }
         sp=read_register(rn);
         for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
@@ -1361,7 +1360,7 @@ if(DISS)
         }
         //there is a write back exception.
         if((inst&(1<<rn))==0) write_register(rn,sp);
-        return(0);
+        goto Return;
     }
 
     //LDR(1) two register immediate
@@ -1371,11 +1370,11 @@ if(DISS)
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
         rb<<=2;
-if(DISS) fprintf(stderr,"ldr r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read32(rb);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LDR(2) three register
@@ -1384,11 +1383,11 @@ if(DISS) fprintf(stderr,"ldr r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldr r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read32(rb);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LDR(3)
@@ -1397,14 +1396,14 @@ if(DISS) fprintf(stderr,"ldr r%u,[r%u,r%u]\n",rd,rn,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"ldr r%u,[PC+#0x%X] ",rd,rb);
+if(DISS) fprintf(stderr,"ldr   r%u,[PC+#0x%X] ",rd,rb);
         ra=read_register(15);
         ra&=~3;
         rb+=ra;
-if(DISS) fprintf(stderr,";@ 0x%X\n",rb);
+if(DISS) fprintf(stderr,";@ 0x%X",rb);
         rc=read32(rb);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LDR(4)
@@ -1413,13 +1412,13 @@ if(DISS) fprintf(stderr,";@ 0x%X\n",rb);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"ldr r%u,[SP+#0x%X]\n",rd,rb);
+if(DISS) fprintf(stderr,"ldr   r%u,[SP+#0x%X]",rd,rb);
         ra=read_register(13);
         //ra&=~3;
         rb+=ra;
         rc=read32(rb);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LDRB(1)
@@ -1428,7 +1427,7 @@ if(DISS) fprintf(stderr,"ldr r%u,[SP+#0x%X]\n",rd,rb);
         rd=(inst>>0)&0x07;
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"ldrb r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read16(rb&(~1));
         if(rb&1)
@@ -1439,7 +1438,7 @@ if(DISS) fprintf(stderr,"ldrb r%u,[r%u,#0x%X]\n",rd,rn,rb);
         {
         }
         write_register(rd,rc&0xFF);
-        return(0);
+        goto Return;
     }
 
     //LDRB(2)
@@ -1448,7 +1447,7 @@ if(DISS) fprintf(stderr,"ldrb r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrb r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read16(rb&(~1));
         if(rb&1)
@@ -1459,7 +1458,7 @@ if(DISS) fprintf(stderr,"ldrb r%u,[r%u,r%u]\n",rd,rn,rm);
         {
         }
         write_register(rd,rc&0xFF);
-        return(0);
+        goto Return;
     }
 
     //LDRH(1)
@@ -1469,11 +1468,11 @@ if(DISS) fprintf(stderr,"ldrb r%u,[r%u,r%u]\n",rd,rn,rm);
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
         rb<<=1;
-if(DISS) fprintf(stderr,"ldrh r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read16(rb);
         write_register(rd,rc&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //LDRH(2)
@@ -1482,11 +1481,11 @@ if(DISS) fprintf(stderr,"ldrh r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrh r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read16(rb);
         write_register(rd,rc&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //LDRSB
@@ -1495,7 +1494,7 @@ if(DISS) fprintf(stderr,"ldrh r%u,[r%u,r%u]\n",rd,rn,rm);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read16(rb&(~1));
         if(rb&1)
@@ -1508,7 +1507,7 @@ if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]\n",rd,rn,rm);
         rc&=0xFF;
         if(rc&0x80) rc|=((MINUS_ONE)<<8);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LDRSH
@@ -1517,13 +1516,13 @@ if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]\n",rd,rn,rm);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read16(rb);
         rc&=0xFFFF;
         if(rc&0x8000) rc|=((MINUS_ONE)<<16);
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //LSL(1)
@@ -1532,7 +1531,7 @@ if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]\n",rd,rn,rm);
         rd=(inst>>0)&0x07;
         rm=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsls r%u,r%u,#0x%X\n",rd,rm,rb);
+if(DISS) fprintf(stderr,"lsls  r%u,r%u,#0x%X",rd,rm,rb);
         rc=read_register(rm);
         if(rb==0)
         {
@@ -1549,7 +1548,7 @@ if(DISS) fprintf(stderr,"lsls r%u,r%u,#0x%X\n",rd,rm,rb);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //LSL(2) two register
@@ -1557,7 +1556,7 @@ if(DISS) fprintf(stderr,"lsls r%u,r%u,#0x%X\n",rd,rm,rb);
     {
         rd=(inst>>0)&0x07;
         rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsls r%u,r%u\n",rd,rs);
+if(DISS) fprintf(stderr,"lsls  r%u,r%u",rd,rs);
         rc=read_register(rd);
         rb=read_register(rs);
         rb&=0xFF;
@@ -1582,7 +1581,7 @@ if(DISS) fprintf(stderr,"lsls r%u,r%u\n",rd,rs);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //LSR(1) two register immediate
@@ -1591,7 +1590,7 @@ if(DISS) fprintf(stderr,"lsls r%u,r%u\n",rd,rs);
         rd=(inst>>0)&0x07;
         rm=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsrs r%u,r%u,#0x%X\n",rd,rm,rb);
+if(DISS) fprintf(stderr,"lsrs  r%u,r%u,#0x%X",rd,rm,rb);
         rc=read_register(rm);
         if(rb==0)
         {
@@ -1606,7 +1605,7 @@ if(DISS) fprintf(stderr,"lsrs r%u,r%u,#0x%X\n",rd,rm,rb);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //LSR(2) two register
@@ -1614,7 +1613,7 @@ if(DISS) fprintf(stderr,"lsrs r%u,r%u,#0x%X\n",rd,rm,rb);
     {
         rd=(inst>>0)&0x07;
         rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsrs r%u,r%u\n",rd,rs);
+if(DISS) fprintf(stderr,"lsrs  r%u,r%u",rd,rs);
         rc=read_register(rd);
         rb=read_register(rs);
         rb&=0xFF;
@@ -1639,7 +1638,7 @@ if(DISS) fprintf(stderr,"lsrs r%u,r%u\n",rd,rs);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //MOV(1) immediate
@@ -1647,11 +1646,11 @@ if(DISS) fprintf(stderr,"lsrs r%u,r%u\n",rd,rs);
     {
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"movs r%u,#0x%02X\n",rd,rb);
+if(DISS) fprintf(stderr,"movs  r%u,#0x%02X",rd,rb);
         write_register(rd,rb);
         do_nflag(rb);
         do_zflag(rb);
-        return(0);
+        goto Return;
     }
 
     //MOV(2) two low registers
@@ -1659,7 +1658,7 @@ if(DISS) fprintf(stderr,"movs r%u,#0x%02X\n",rd,rb);
     {
         rd=(inst>>0)&7;
         rn=(inst>>3)&7;
-if(DISS) fprintf(stderr,"movs r%u,r%u\n",rd,rn);
+if(DISS) fprintf(stderr,"movs  r%u,r%u",rd,rn);
         rc=read_register(rn);
 //fprintf(stderr,"0x%08X\n",rc);
         write_register(rd,rc);
@@ -1667,7 +1666,7 @@ if(DISS) fprintf(stderr,"movs r%u,r%u\n",rd,rn);
         do_zflag(rc);
         do_cflag_bit(0);
         do_vflag_bit(0);
-        return(0);
+        goto Return;
     }
 
     //MOV(3)
@@ -1676,7 +1675,7 @@ if(DISS) fprintf(stderr,"movs r%u,r%u\n",rd,rn);
         rd=(inst>>0)&0x7;
         rd|=(inst>>4)&0x8;
         rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"mov r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
         rc=read_register(rm);
         if((rd==14)&&(rm==15))
         {
@@ -1694,7 +1693,7 @@ if(DISS) fprintf(stderr,"mov r%u,r%u\n",rd,rm);
             rc+=2; //The program counter is special
         }
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //MUL
@@ -1702,14 +1701,14 @@ if(DISS) fprintf(stderr,"mov r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"muls r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra*rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //MVN
@@ -1717,13 +1716,13 @@ if(DISS) fprintf(stderr,"muls r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"mvns r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"mvns  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=(~ra);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //NEG
@@ -1731,7 +1730,7 @@ if(DISS) fprintf(stderr,"mvns r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"negs r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"negs  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=0-ra;
         write_register(rd,rc);
@@ -1739,7 +1738,7 @@ if(DISS) fprintf(stderr,"negs r%u,r%u\n",rd,rm);
         do_zflag(rc);
         do_cflag(0,~ra,1);
         do_vflag(0,~ra,1);
-        return(0);
+        goto Return;
     }
 
     //ORR
@@ -1747,14 +1746,14 @@ if(DISS) fprintf(stderr,"negs r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"orrs r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"orrs  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra|rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
 
@@ -1763,7 +1762,7 @@ if(DISS) fprintf(stderr,"orrs r%u,r%u\n",rd,rm);
     {
 if(DISS)
 {
-    fprintf(stderr,"pop {");
+    fprintf(stderr,"pop   {");
     for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
     {
         if(inst&rb)
@@ -1778,7 +1777,7 @@ if(DISS)
         if(rc) fprintf(stderr,",");
         fprintf(stderr,"pc");
     }
-    fprintf(stderr,"}\n");
+    fprintf(stderr,"}");
 }
 
         sp=read_register(13);
@@ -1795,7 +1794,7 @@ if(DISS)
             rc=read32(sp);
             if((rc&1)==0)
             {
-                fprintf(stderr,"pop {rc} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
+                fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
                 //exit(1);
                 rc&=~1;
             }
@@ -1804,7 +1803,7 @@ if(DISS)
             sp+=4;
         }
         write_register(13,sp);
-        return(0);
+        goto Return;
     }
 
     //PUSH
@@ -1813,7 +1812,7 @@ if(DISS)
 
 if(DISS)
 {
-    fprintf(stderr,"push {");
+    fprintf(stderr,"push  {");
     for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
     {
         if(inst&rb)
@@ -1828,7 +1827,7 @@ if(DISS)
         if(rc) fprintf(stderr,",");
         fprintf(stderr,"lr");
     }
-    fprintf(stderr,"}\n");
+    fprintf(stderr,"}");
 }
 
         sp=read_register(13);
@@ -1859,14 +1858,14 @@ if(DISS)
 
             if((rc&1)==0)
             {
-                fprintf(stderr,"push {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
+                fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
 //                exit(1);
             }
 
 
         }
         write_register(13,sp);
-        return(0);
+        goto Return;
     }
 
     //REV
@@ -1874,14 +1873,14 @@ if(DISS)
     {
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev r%u,r%u\n",rd,rn);
+if(DISS) fprintf(stderr,"rev   r%u,r%u",rd,rn);
         ra=read_register(rn);
         rc =((ra>> 0)&0xFF)<<24;
         rc|=((ra>> 8)&0xFF)<<16;
         rc|=((ra>>16)&0xFF)<< 8;
         rc|=((ra>>24)&0xFF)<< 0;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //REV16
@@ -1889,14 +1888,14 @@ if(DISS) fprintf(stderr,"rev r%u,r%u\n",rd,rn);
     {
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev16 r%u,r%u\n",rd,rn);
+if(DISS) fprintf(stderr,"rev16 r%u,r%u",rd,rn);
         ra=read_register(rn);
         rc =((ra>> 0)&0xFF)<< 8;
         rc|=((ra>> 8)&0xFF)<< 0;
         rc|=((ra>>16)&0xFF)<<24;
         rc|=((ra>>24)&0xFF)<<16;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //REVSH
@@ -1904,14 +1903,14 @@ if(DISS) fprintf(stderr,"rev16 r%u,r%u\n",rd,rn);
     {
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"revsh r%u,r%u\n",rd,rn);
+if(DISS) fprintf(stderr,"revsh r%u,r%u",rd,rn);
         ra=read_register(rn);
         rc =((ra>> 0)&0xFF)<< 8;
         rc|=((ra>> 8)&0xFF)<< 0;
         if(rc&0x8000) rc|=0xFFFF0000;
         else          rc&=0x0000FFFF;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //ROR
@@ -1919,7 +1918,7 @@ if(DISS) fprintf(stderr,"revsh r%u,r%u\n",rd,rn);
     {
         rd=(inst>>0)&0x7;
         rs=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rors r%u,r%u\n",rd,rs);
+if(DISS) fprintf(stderr,"rors  r%u,r%u",rd,rs);
         rc=read_register(rd);
         ra=read_register(rs);
         ra&=0xFF;
@@ -1944,7 +1943,7 @@ if(DISS) fprintf(stderr,"rors r%u,r%u\n",rd,rs);
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //SBC
@@ -1952,7 +1951,7 @@ if(DISS) fprintf(stderr,"rors r%u,r%u\n",rd,rs);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sbc r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"sbc   r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
         rc=ra-rb;
@@ -1970,7 +1969,7 @@ if(DISS) fprintf(stderr,"sbc r%u,r%u\n",rd,rm);
             do_cflag(ra,~rb,0);
             do_vflag(ra,~rb,0);
         }
-        return(0);
+        goto Return;
     }
 
     //SETEND
@@ -1997,7 +1996,7 @@ if(DISS)
             rc++;
         }
     }
-    fprintf(stderr,"}\n");
+    fprintf(stderr,"}");
 }
         sp=read_register(rn);
         for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
@@ -2009,7 +2008,7 @@ if(DISS)
             }
         }
         write_register(rn,sp);
-        return(0);
+        goto Return;
     }
 
     //STR(1)
@@ -2019,11 +2018,11 @@ if(DISS)
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
         rb<<=2;
-if(DISS) fprintf(stderr,"str r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
         write32(rb,rc);
-        return(0);
+        goto Return;
     }
 
     //STR(2)
@@ -2032,11 +2031,11 @@ if(DISS) fprintf(stderr,"str r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"str r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
         write32(rb,rc);
-        return(0);
+        goto Return;
     }
 
     //STR(3)
@@ -2045,12 +2044,12 @@ if(DISS) fprintf(stderr,"str r%u,[r%u,r%u]\n",rd,rn,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"str r%u,[SP,#0x%X]\n",rd,rb);
+if(DISS) fprintf(stderr,"str   r%u,[SP,#0x%X]",rd,rb);
         rb=read_register(13)+rb;
 //fprintf(stderr,"0x%08X\n",rb);
         rc=read_register(rd);
         write32(rb,rc);
-        return(0);
+        goto Return;
     }
 
     //STRB(1)
@@ -2059,7 +2058,7 @@ if(DISS) fprintf(stderr,"str r%u,[SP,#0x%X]\n",rd,rb);
         rd=(inst>>0)&0x07;
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"strb r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
         ra=read16(rb&(~1));
@@ -2074,7 +2073,7 @@ if(DISS) fprintf(stderr,"strb r%u,[r%u,#0x%X]\n",rd,rn,rb);
             ra|=rc&0x00FF;
         }
         write16(rb&(~1),ra&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //STRB(2)
@@ -2083,7 +2082,7 @@ if(DISS) fprintf(stderr,"strb r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strb r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
         ra=read16(rb&(~1));
@@ -2098,7 +2097,7 @@ if(DISS) fprintf(stderr,"strb r%u,[r%u,r%u]\n",rd,rn,rm);
             ra|=rc&0x00FF;
         }
         write16(rb&(~1),ra&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //STRH(1)
@@ -2108,11 +2107,11 @@ if(DISS) fprintf(stderr,"strb r%u,[r%u,r%u]\n",rd,rn,rm);
         rn=(inst>>3)&0x07;
         rb=(inst>>6)&0x1F;
         rb<<=1;
-if(DISS) fprintf(stderr,"strh r%u,[r%u,#0x%X]\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
         write16(rb,rc&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //STRH(2)
@@ -2121,11 +2120,11 @@ if(DISS) fprintf(stderr,"strh r%u,[r%u,#0x%X]\n",rd,rn,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strh r%u,[r%u,r%u]\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
         write16(rb,rc&0xFFFF);
-        return(0);
+        goto Return;
     }
 
     //SUB(1)
@@ -2134,7 +2133,7 @@ if(DISS) fprintf(stderr,"strh r%u,[r%u,r%u]\n",rd,rn,rm);
         rd=(inst>>0)&7;
         rn=(inst>>3)&7;
         rb=(inst>>6)&7;
-if(DISS) fprintf(stderr,"subs r%u,r%u,#0x%X\n",rd,rn,rb);
+if(DISS) fprintf(stderr,"subs  r%u,r%u,#0x%X",rd,rn,rb);
         ra=read_register(rn);
         rc=ra-rb;
         write_register(rd,rc);
@@ -2142,7 +2141,7 @@ if(DISS) fprintf(stderr,"subs r%u,r%u,#0x%X\n",rd,rn,rb);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //SUB(2)
@@ -2150,7 +2149,7 @@ if(DISS) fprintf(stderr,"subs r%u,r%u,#0x%X\n",rd,rn,rb);
     {
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"subs r%u,#0x%02X\n",rd,rb);
+if(DISS) fprintf(stderr,"subs  r%u,#0x%02X",rd,rb);
         ra=read_register(rd);
         rc=ra-rb;
         write_register(rd,rc);
@@ -2158,7 +2157,7 @@ if(DISS) fprintf(stderr,"subs r%u,#0x%02X\n",rd,rb);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //SUB(3)
@@ -2167,7 +2166,7 @@ if(DISS) fprintf(stderr,"subs r%u,#0x%02X\n",rd,rb);
         rd=(inst>>0)&0x7;
         rn=(inst>>3)&0x7;
         rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"subs r%u,r%u,r%u\n",rd,rn,rm);
+if(DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra-rb;
@@ -2176,7 +2175,7 @@ if(DISS) fprintf(stderr,"subs r%u,r%u,r%u\n",rd,rn,rm);
         do_zflag(rc);
         do_cflag(ra,~rb,1);
         do_vflag(ra,~rb,1);
-        return(0);
+        goto Return;
     }
 
     //SUB(4)
@@ -2184,23 +2183,23 @@ if(DISS) fprintf(stderr,"subs r%u,r%u,r%u\n",rd,rn,rm);
     {
         rb=inst&0x7F;
         rb<<=2;
-if(DISS) fprintf(stderr,"sub SP,#0x%02X\n",rb);
+if(DISS) fprintf(stderr,"sub   SP,#0x%02X",rb);
         ra=read_register(13);
         ra-=rb;
         write_register(13,ra);
-        return(0);
+        goto Return;
     }
 
     //SWI
     if((inst&0xFF00)==0xDF00)
     {
         rb=inst&0xFF;
-if(DISS) fprintf(stderr,"swi 0x%02X\n",rb);
+if(DISS) fprintf(stderr,"swi   0x%02X",rb);
 
         if((inst&0xFF)==0xCC)
         {
             write_register(0,cpsr);
-            return(0);
+            goto Return;
         }
         else
         {
@@ -2214,12 +2213,12 @@ if(DISS) fprintf(stderr,"swi 0x%02X\n",rb);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sxtb r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"sxtb  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=ra&0xFF;
         if(rc&0x80) rc|=(MINUS_ONE)<<8;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //SXTH
@@ -2227,12 +2226,12 @@ if(DISS) fprintf(stderr,"sxtb r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sxth r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"sxth  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=ra&0xFFFF;
         if(rc&0x8000) rc|=(MINUS_ONE)<<16;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //TST
@@ -2240,13 +2239,13 @@ if(DISS) fprintf(stderr,"sxth r%u,r%u\n",rd,rm);
     {
         rn=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"tst r%u,r%u\n",rn,rm);
+if(DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
         ra=read_register(rn);
         rb=read_register(rm);
         rc=ra&rb;
         do_nflag(rc);
         do_zflag(rc);
-        return(0);
+        goto Return;
     }
 
     //UXTB
@@ -2254,11 +2253,11 @@ if(DISS) fprintf(stderr,"tst r%u,r%u\n",rn,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxtb r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"uxtb  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=ra&0xFF;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     //UXTH
@@ -2266,15 +2265,19 @@ if(DISS) fprintf(stderr,"uxtb r%u,r%u\n",rd,rm);
     {
         rd=(inst>>0)&0x7;
         rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxth r%u,r%u\n",rd,rm);
+if(DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
         ra=read_register(rm);
         rc=ra&0xFFFF;
         write_register(rd,rc);
-        return(0);
+        goto Return;
     }
 
     fprintf(stderr,"invalid instruction 0x%08X 0x%04X\n",pc-4,inst);
     return(1);
+
+Return:
+    if (DISS) fprintf(stderr,sym ? " ; %s\n" : "\n", sym);
+    return 0;
 }
 //-------------------------------------------------------------------
 int reset ( void )
