@@ -43,10 +43,13 @@ unsigned char R = 0;
 unsigned char S = 0;
 int32_t top = 0;
 int32_t  P, IP, WP, thread, len;
+int32_t  IZ;
 unsigned char bytecode, c;
 
-int32_t data[16000] = {};
-unsigned char* cData = (unsigned char*)data;
+unsigned char cData[] = {
+#include "dict32le.h"
+};
+int32_t *data = (int32_t*) cData;
 
 // Virtual Forth Machine
 
@@ -66,7 +69,7 @@ void txsto(void)
 }
 void next(void)
 {
-// puts("IP=");putx(IP,4);nl();
+//puts("IP=");putx(IP,4);nl();
 	P = data[IP >> 2];
 	WP = P + 4;
 	IP += 4;
@@ -831,6 +834,7 @@ int as_min = 63;
 */
 int notmain(void)
 {
+#ifdef BOOT
 	cData = (unsigned char*)data;
 	P = 512;
 	R = 0;
@@ -1400,13 +1404,16 @@ int notmain(void)
         puts(" R-stack=");
         puti(popR << 2, 16);
 
+        IZ = P;
+
 	P = 0;
 	int RESET = LABEL(2, 6, COLD);
 	P = 0x90;
 	int USER = LABEL(8, 0X100, 0x10, IMMED - 12, ENDD, IMMED - 12, INTER, QUITT, 0);
 	// dump dictionary
-	//P = 0;
-	//for (len = 0; len < 0x200; len++) { CheckSum(); }
+	P = 0;
+	for (; P < IZ; ) { CheckSum(); }
+#endif
 
 	P = 0;
 	WP = 4;
