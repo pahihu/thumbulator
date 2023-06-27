@@ -35,96 +35,17 @@
 # define	push	stack[(char) ++S] = top; top =
 # define	popR rack[(char)R--]
 # define	pushR rack[(char)++R]
-
-int32_t rack[256] = { 0 };
-int32_t stack[256] = { 0 };
-int64_t d, n, m;
-char R = 0;
-char S = 0;
-int32_t top = 0;
-int32_t  P, IP, WP, thread, len;
-int32_t  IZ;
-unsigned char bytecode, c;
-
-void nop(), bye(), qrx(), txsto(), docon(), dolit(), dolist(), exitt();
-void execu(), donext(), qbran(), bran(), store(), at(), cstor(), cat();
-void rfrom(), rat(), tor(), drop(), dup(), swap(), over(), zless();
-void andd(), orr(), xorr(), uplus(), next(), qdup(), rot(), ddrop();
-void ddup(), plus(), inver(), negat(), dnega(), subb(), abss(), equal();
-void uless(), less(), ummod(), msmod(), slmod(), mod(), slash(), umsta();
-void star(), mstar(), ssmod(), stasl(), pick(), pstor(), dstor(), dat();
-void count(), dovar(), max(), min();
-
-void(*primitives[64])(void) = {
-	/* case 0 */ nop,
-	/* case 1 */ bye,
-	/* case 2 */ qrx,
-	/* case 3 */ txsto,
-	/* case 4 */ docon,
-	/* case 5 */ dolit,
-	/* case 6 */ dolist,
-	/* case 7 */ exitt,
-	/* case 8 */ execu,
-	/* case 9 */ donext,
-	/* case 10 */ qbran,
-	/* case 11 */ bran,
-	/* case 12 */ store,
-	/* case 13 */ at,
-	/* case 14 */ cstor,
-	/* case 15 */ cat,
-	/* case 16  rpat, */ nop,
-	/* case 17  rpsto, */ nop,
-	/* case 18 */ rfrom,
-	/* case 19 */ rat,
-	/* case 20 */ tor,
-	/* case 21 spat, */ nop,
-	/* case 22 spsto, */ nop,
-	/* case 23 */ drop,
-	/* case 24 */ dup,
-	/* case 25 */ swap,
-	/* case 26 */ over,
-	/* case 27 */ zless,
-	/* case 28 */ andd,
-	/* case 29 */ orr,
-	/* case 30 */ xorr,
-	/* case 31 */ uplus,
-	/* case 32 */ next,
-	/* case 33 */ qdup,
-	/* case 34 */ rot,
-	/* case 35 */ ddrop,
-	/* case 36 */ ddup,
-	/* case 37 */ plus,
-	/* case 38 */ inver,
-	/* case 39 */ negat,
-	/* case 40 */ dnega,
-	/* case 41 */ subb,
-	/* case 42 */ abss,
-	/* case 43 */ equal,
-	/* case 44 */ uless,
-	/* case 45 */ less,
-	/* case 46 */ ummod,
-	/* case 47 */ msmod,
-	/* case 48 */ slmod,
-	/* case 49 */ mod,
-	/* case 50 */ slash,
-	/* case 51 */ umsta,
-	/* case 52 */ star,
-	/* case 53 */ mstar,
-	/* case 54 */ ssmod,
-	/* case 55 */ stasl,
-	/* case 56 */ pick,
-	/* case 57 */ pstor,
-	/* case 58 */ dstor,
-	/* case 59 */ dat,
-	/* case 60 */ count,
-	/* case 61 */ dovar,
-	/* case 62 */ max,
-	/* case 63 */ min,
-};
-
+# define        N       stack[(char)S]
 int32_t *data;
 
 #ifdef BOOT
+int32_t rack[256] = { 0 };
+int32_t stack[256] = { 0 };
+char R = 0;
+char S = 0;
+int32_t  P, IP, thread, len;
+int32_t  IZ;
+
 unsigned char cData[64000] = { 0, 0, 0, 0 };
 #else
 unsigned char cData[] = {
@@ -133,60 +54,91 @@ unsigned char cData[] = {
 #endif
 
 // Virtual Forth Machine
+#define DONEXT \
+{ \
+	P = data[IP >> 2]; \
+	WP = P + 4; \
+	IP += 4; \
+}
+#define _DROP    pop
+#define _OVER    push stack[(char)S - 1];
 
-void bye(void)
+void vfm(int32_t p)
+{
+int32_t rack[256] = { 0 };
+int32_t stack[256] = { 0 };
+int64_t d, n, m;
+char R;
+char S;
+int32_t top;
+int32_t  P, IP, WP;
+unsigned char bytecode;
+
+P = p;
+WP = 4;
+IP = 0;
+S = 0;
+R = 0;
+top = 0;
+while (TRUE) {
+bytecode = (unsigned char)cData[P++];
+// puti(P-1,16); putc(' '); putd(bytecode); nl();
+switch(bytecode) {
+case 0: // nop
+{
+Nop:    DONEXT;
+}
+break;
+case 1: // bye
 {
 	exit(0);
 }
-void qrx(void)
+break;
+case 2: // qrx
 {
 	push(int32_t) getc();
 	if (top != 0) { push TRUE; }
 }
-void txsto(void)
+break;
+case 3: // txsto
 {
 	putc((char)top);
 	pop;
 }
-void next(void)
-{
-//puts("IP=");putx(IP,4);nl();
-	P = data[IP >> 2];
-	WP = P + 4;
-	IP += 4;
-}
-void dovar(void)
-{
-	push WP;
-}
-void docon(void)
+break;
+case 4: // docon
 {
 	push data[WP >> 2];
 }
-void dolit(void)
+break;
+case 5: // dolit
 {
 	push data[IP >> 2];
 	IP += 4;
-	next();
+	DONEXT;
 }
-void dolist(void)
+break;
+case 6: // dolist
 {
 	rack[(char)++R] = IP;
 	IP = WP;
-	next();
+	DONEXT;
 }
-void exitt(void)
+break;
+case 7: // exitt
 {
 	IP = (int32_t)rack[(char)R--];
-	next();
+	DONEXT;
 }
-void execu(void)
+break;
+case 8: // execu
 {
 	P = top;
 	WP = P + 4;
 	pop;
 }
-void donext(void)
+break;
+case 9: // donext
 {
 	if (rack[(char)R]) {
 		rack[(char)R] -= 1;
@@ -196,161 +148,197 @@ void donext(void)
 		IP += 4;
 		R--;
 	}
-	next();
+	DONEXT;
 }
-void qbran(void)
+break;
+case 10: // qbran
 {
 	if (top == 0) IP = data[IP >> 2];
 	else IP += 4;
 	pop;
-	next();
+	DONEXT;
 }
-void bran(void)
+break;
+case 11: // bran
 {
 	IP = data[IP >> 2];
-	next();
+	DONEXT;
 }
-void store(void)
+break;
+case 12: // store
 {
 	data[top >> 2] = stack[(char)S--];
 	pop;
 }
-void at(void)
+break;
+case 13: // at
 {
 	top = data[top >> 2];
 }
-void cstor(void)
+break;
+case 14: // cstor
 {
 	cData[top] = (char)stack[(char)S--];
 	pop;
 }
-void cat(void)
+break;
+case 15: // cat
 {
 	top = (int32_t)cData[top];
 }
-void rfrom(void)
+break;
+case 16: // rpat
+        goto Nop;
+case 17: // rpsto
+        goto Nop;
+case 18: // rfrom
 {
 	push rack[(char)R--];
 }
-void rat(void)
+break;
+case 19: // rat
 {
 	push rack[(char)R];
 }
-void tor(void)
+break;
+case 20: // tor
 {
 	rack[(char)++R] = top;
 	pop;
 }
-void drop(void)
+break;
+case 21: // spat
+        goto Nop;
+case 22: // spsto
+        goto Nop;
+case 23: // drop
 {
 	pop;
 }
-void dup(void)
+break;
+case 24: // dup
 {
 	stack[(char) ++S] = top;
 }
-void swap(void)
+break;
+case 25: // swap
 {
 	WP = top;
 	top = stack[(char)S];
 	stack[(char)S] = WP;
 }
-void over(void)
+break;
+case 26: // over
 {
 	push stack[(char)S - 1];
 }
-void zless(void)
+break;
+case 27: // zless
 {
 	top = (top < 0) LOGICAL;
 }
-void andd(void)
+break;
+case 28: // andd
 {
 	top &= stack[(char)S--];
 }
-void orr(void)
+break;
+case 29: // orr
 {
 	top |= stack[(char)S--];
 }
-void xorr(void)
+break;
+case 30: // xorr
 {
 	top ^= stack[(char)S--];
 }
-void uplus(void)
+break;
+case 31: // uplus
 {
 	stack[(char)S] += top;
 	top = LOWER(stack[(char)S], top);
 }
-void nop(void)
+break;
+case 32: // next
 {
-	next();
+	P = data[IP >> 2];
+	WP = P + 4;
+	IP += 4;
 }
-void qdup(void)
+break;
+case 33: // qdup
 {
 	if (top) stack[(char) ++S] = top;
 }
-void rot(void)
+break;
+case 34: // rot
 {
 	WP = stack[(char)S - 1];
 	stack[(char)S - 1] = stack[(char)S];
 	stack[(char)S] = top;
 	top = WP;
 }
-void ddrop(void)
+break;
+case 35: // ddrop
 {
-	drop(); drop();
+	_DROP; _DROP;
 }
-void ddup(void)
+break;
+case 36: // ddup
 {
-	over(); over();
+	_OVER; _OVER;
 }
-void plus(void)
+break;
+case 37: // plus
 {
 	top += stack[(char)S--];
 }
-void inver(void)
+break;
+case 38: // inver
 {
 	top = -top - 1;
 }
-void negat(void)
+break;
+case 39: // negat
 {
 	top = 0 - top;
 }
-void dnega(void)
+break;
+case 40: // dnega
 {
-	inver();
-	tor();
-	inver();
-	push 1;
-	uplus();
-	rfrom();
-	plus();
+	// inver(); tor(); inver(); push 1; uplus(); rfrom(); plus();
+        N   = ~N;
+        top = ~top;
+        if (!++N) top++;
 }
-void subb(void)
+break;
+case 41: // subb
 {
 	top = stack[(char)S--] - top;
 }
-void abss(void)
+break;
+case 42: // abss
 {
 	if (top < 0)
 		top = -top;
 }
-void great(void)
-{
-	top = (stack[(char)S--] > top) LOGICAL;
-}
-void less(void)
-{
-	top = (stack[(char)S--] < top) LOGICAL;
-}
-void equal(void)
+break;
+case 43: // equal
 {
 	top = (stack[(char)S--] == top) LOGICAL;
 }
-void uless(void)
+break;
+case 44: // uless
 {
 	top = LOWER(stack[(char)S], top) LOGICAL; (char)S--;
 }
-void ummod(void)
+break;
+case 45: // less
+{
+	top = (stack[(char)S--] < top) LOGICAL;
+}
+break;
+case 46: // ummod
 {
 	d = (int64_t)((uint32_t)top);
 	m = (int64_t)((uint32_t)stack[(char)S]);
@@ -360,7 +348,8 @@ void ummod(void)
 	top = (uint32_t)(n / d);
 	stack[(char)S] = (uint32_t)(n % d);
 }
-void msmod(void)
+break;
+case 47: // msmod
 {
 	d = (int64_t)((int32_t)top);
 	m = (int64_t)((int32_t)stack[(char)S]);
@@ -370,7 +359,8 @@ void msmod(void)
 	top = (int32_t)(n / d);
 	stack[(char)S] = (int32_t)(n % d);
 }
-void slmod(void)
+break;
+case 48: // slmod
 {
 	if (top != 0) {
 		WP = stack[(char)S] / top;
@@ -378,15 +368,18 @@ void slmod(void)
 		top = WP;
 	}
 }
-void mod(void)
+break;
+case 49: // mod
 {
 	top = (top) ? stack[(char)S--] % top : stack[(char)S--];
 }
-void slash(void)
+break;
+case 50: // slash
 {
 	top = (top) ? stack[(char)S--] / top : (stack[(char)S--], 0);
 }
-void umsta(void)
+break;
+case 51: // umsta
 {
 	d = (uint64_t)top;
 	m = (uint64_t)stack[(char)S];
@@ -394,11 +387,13 @@ void umsta(void)
 	top = (uint32_t)(m >> 32);
 	stack[(char)S] = (uint32_t)m;
 }
-void star(void)
+break;
+case 52: // star
 {
 	top *= stack[(char)S--];
 }
-void mstar(void)
+break;
+case 53: // mstar
 {
 	d = (int64_t)top;
 	m = (int64_t)stack[(char)S];
@@ -406,7 +401,8 @@ void mstar(void)
 	top = (int32_t)(m >> 32);
 	stack[(char)S] = (int32_t)m;
 }
-void ssmod(void)
+break;
+case 54: // ssmod
 {
 	d = (int64_t)top;
 	m = (int64_t)stack[(char)S];
@@ -416,7 +412,8 @@ void ssmod(void)
 	top = (int32_t)(n / d);
 	stack[(char)S] = (int32_t)(n % d);
 }
-void stasl(void)
+break;
+case 55: // stasl
 {
 	d = (int64_t)top;
 	m = (int64_t)stack[(char)S];
@@ -425,41 +422,68 @@ void stasl(void)
 	pop; pop;
 	top = (int32_t)(n / d);
 }
-void pick(void)
+break;
+case 56: // pick
 {
 	top = stack[(char)S - (char)top];
 }
-void pstor(void)
+break;
+case 57: // pstor
 {
 	data[top >> 2] += stack[(char)S--], pop;
 }
-void dstor(void)
+break;
+case 58: // dstor
 {
 	data[top >> 2] = stack[(char)S--];
 	data[(top >> 2) + 1] = stack[(char)S--];
 	pop;
 }
-void dat(void)
+break;
+case 59: // dat
 {
         WP = top >> 2;
 	top = data[WP + 1];
 	push data[WP];
 }
-void count(void)
+break;
+case 60: // count
 {
 	stack[(char) ++S] = top + 1;
 	top = cData[top];
 }
-void max(void)
+break;
+case 61: // dovar
+{
+	push WP;
+}
+break;
+case 62: // max
 {
 	if (top < stack[(char)S]) pop;
 	else (char)S--;
 }
-void min(void)
+break;
+case 63: // min
 {
 	if (top < stack[(char)S]) (char) S--;
 	else pop;
 }
+break;
+default:
+        puti(P-1, 16); putc(' '); puti(bytecode, 16);
+        puts(" invalid bytecode"); nl();
+        exit(1);
+} // switch
+} // while
+} // VFM
+
+#if 0
+void great(void)
+{
+	top = (stack[(char)S--] > top) LOGICAL;
+}
+#endif
 
 #ifdef BOOT
 // Macro Assembler
@@ -1431,16 +1455,8 @@ int notmain(void)
 	// for (; P < IZ; ) { CheckSum(); }
 #endif
 
-	P = 0;
-	WP = 4;
-	IP = 0;
-	S = 0;
-	R = 0;
-	top = 0;
 	puts("\nceForth v3.3, 01jul19cht\n");
-	while (TRUE) {
-		primitives[(unsigned char)cData[P++]]();
-	}
+        vfm(0);
 
         return 0;
 }
