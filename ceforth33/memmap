@@ -9,6 +9,13 @@ SECTIONS
 {
     .text   : { *(.text*)   } > rom
     .rodata : { *(.rodata*) } > rom
+    .bss    :
+        {
+            __bss_start__ = .; PROVIDE(_bss_start = .);
+            *(.bss*)
+            __bss_end__ = . ; PROVIDE(_bss_end = .);
+        } > ram AT > rom
+    PROVIDE(_bss_size = SIZEOF(.bss));
     .data   :
         {
             __data_start__ = .; PROVIDE(_data_start = .);
@@ -17,13 +24,6 @@ SECTIONS
         } > ram AT > rom
     PROVIDE(_data_size = SIZEOF(.data));
     PROVIDE(_data_load_start = LOADADDR(.data));
-    .bss    :
-        {
-            __bss_start__ = .; PROVIDE(_bss_start = .);
-            *(.bss*)
-            __bss_end__ = . ; PROVIDE(_bss_end = .);
-        } > ram AT > rom
-    PROVIDE(_bss_size = SIZEOF(.bss));
     PROVIDE(end = .);
 }
 

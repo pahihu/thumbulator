@@ -3,7 +3,8 @@ ARMGNU ?= arm-none-elf
 
 # COPS = -Wall -mthumb -O2 -fomit-frame-pointer -nostdlib -nostartfiles -ffreestanding
 CC = arm-none-elf-gcc -fsigned-char
-CFLAGS = -Wall -mthumb -O2 -nostdlib -ffreestanding
+OPT = -O1
+CFLAGS = -Wall -mthumb $(OPT) -nostdlib -ffreestanding #-DBOOT=1
 
 all : ceforth33.bin
 

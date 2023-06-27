@@ -33,23 +33,104 @@
 # define 	LOWER(x,y) ((uint32_t)(x)<(uint32_t)(y))
 # define	pop	top = stack[(char) S--]
 # define	push	stack[(char) ++S] = top; top =
-# define	popR rack[(unsigned char)R--]
-# define	pushR rack[(unsigned char)++R]
+# define	popR rack[(char)R--]
+# define	pushR rack[(char)++R]
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-unsigned char R = 0;
-unsigned char S = 0;
+char R = 0;
+char S = 0;
 int32_t top = 0;
 int32_t  P, IP, WP, thread, len;
 int32_t  IZ;
 unsigned char bytecode, c;
 
+void nop(), bye(), qrx(), txsto(), docon(), dolit(), dolist(), exitt();
+void execu(), donext(), qbran(), bran(), store(), at(), cstor(), cat();
+void rfrom(), rat(), tor(), drop(), dup(), swap(), over(), zless();
+void andd(), orr(), xorr(), uplus(), next(), qdup(), rot(), ddrop();
+void ddup(), plus(), inver(), negat(), dnega(), subb(), abss(), equal();
+void uless(), less(), ummod(), msmod(), slmod(), mod(), slash(), umsta();
+void star(), mstar(), ssmod(), stasl(), pick(), pstor(), dstor(), dat();
+void count(), dovar(), max(), min();
+
+void(*primitives[64])(void) = {
+	/* case 0 */ nop,
+	/* case 1 */ bye,
+	/* case 2 */ qrx,
+	/* case 3 */ txsto,
+	/* case 4 */ docon,
+	/* case 5 */ dolit,
+	/* case 6 */ dolist,
+	/* case 7 */ exitt,
+	/* case 8 */ execu,
+	/* case 9 */ donext,
+	/* case 10 */ qbran,
+	/* case 11 */ bran,
+	/* case 12 */ store,
+	/* case 13 */ at,
+	/* case 14 */ cstor,
+	/* case 15 */ cat,
+	/* case 16  rpat, */ nop,
+	/* case 17  rpsto, */ nop,
+	/* case 18 */ rfrom,
+	/* case 19 */ rat,
+	/* case 20 */ tor,
+	/* case 21 spat, */ nop,
+	/* case 22 spsto, */ nop,
+	/* case 23 */ drop,
+	/* case 24 */ dup,
+	/* case 25 */ swap,
+	/* case 26 */ over,
+	/* case 27 */ zless,
+	/* case 28 */ andd,
+	/* case 29 */ orr,
+	/* case 30 */ xorr,
+	/* case 31 */ uplus,
+	/* case 32 */ next,
+	/* case 33 */ qdup,
+	/* case 34 */ rot,
+	/* case 35 */ ddrop,
+	/* case 36 */ ddup,
+	/* case 37 */ plus,
+	/* case 38 */ inver,
+	/* case 39 */ negat,
+	/* case 40 */ dnega,
+	/* case 41 */ subb,
+	/* case 42 */ abss,
+	/* case 43 */ equal,
+	/* case 44 */ uless,
+	/* case 45 */ less,
+	/* case 46 */ ummod,
+	/* case 47 */ msmod,
+	/* case 48 */ slmod,
+	/* case 49 */ mod,
+	/* case 50 */ slash,
+	/* case 51 */ umsta,
+	/* case 52 */ star,
+	/* case 53 */ mstar,
+	/* case 54 */ ssmod,
+	/* case 55 */ stasl,
+	/* case 56 */ pick,
+	/* case 57 */ pstor,
+	/* case 58 */ dstor,
+	/* case 59 */ dat,
+	/* case 60 */ count,
+	/* case 61 */ dovar,
+	/* case 62 */ max,
+	/* case 63 */ min,
+};
+
+int32_t *data;
+
+#ifdef BOOT
+unsigned char cData[64000] = { 0, 0, 0, 0 };
+#else
 unsigned char cData[] = {
 #include "dict32le.h"
 };
-int32_t *data = (int32_t*) cData;
+#endif
 
 // Virtual Forth Machine
 
@@ -380,73 +461,7 @@ void min(void)
 	else pop;
 }
 
-void(*primitives[64])(void) = {
-	/* case 0 */ nop,
-	/* case 1 */ bye,
-	/* case 2 */ qrx,
-	/* case 3 */ txsto,
-	/* case 4 */ docon,
-	/* case 5 */ dolit,
-	/* case 6 */ dolist,
-	/* case 7 */ exitt,
-	/* case 8 */ execu,
-	/* case 9 */ donext,
-	/* case 10 */ qbran,
-	/* case 11 */ bran,
-	/* case 12 */ store,
-	/* case 13 */ at,
-	/* case 14 */ cstor,
-	/* case 15 */ cat,
-	/* case 16  rpat, */ nop,
-	/* case 17  rpsto, */ nop,
-	/* case 18 */ rfrom,
-	/* case 19 */ rat,
-	/* case 20 */ tor,
-	/* case 21 spat, */ nop,
-	/* case 22 spsto, */ nop,
-	/* case 23 */ drop,
-	/* case 24 */ dup,
-	/* case 25 */ swap,
-	/* case 26 */ over,
-	/* case 27 */ zless,
-	/* case 28 */ andd,
-	/* case 29 */ orr,
-	/* case 30 */ xorr,
-	/* case 31 */ uplus,
-	/* case 32 */ next,
-	/* case 33 */ qdup,
-	/* case 34 */ rot,
-	/* case 35 */ ddrop,
-	/* case 36 */ ddup,
-	/* case 37 */ plus,
-	/* case 38 */ inver,
-	/* case 39 */ negat,
-	/* case 40 */ dnega,
-	/* case 41 */ subb,
-	/* case 42 */ abss,
-	/* case 43 */ equal,
-	/* case 44 */ uless,
-	/* case 45 */ less,
-	/* case 46 */ ummod,
-	/* case 47 */ msmod,
-	/* case 48 */ slmod,
-	/* case 49 */ mod,
-	/* case 50 */ slash,
-	/* case 51 */ umsta,
-	/* case 52 */ star,
-	/* case 53 */ mstar,
-	/* case 54 */ ssmod,
-	/* case 55 */ stasl,
-	/* case 56 */ pick,
-	/* case 57 */ pstor,
-	/* case 58 */ dstor,
-	/* case 59 */ dat,
-	/* case 60 */ count,
-	/* case 61 */ dovar,
-	/* case 62 */ max,
-	/* case 63 */ min,
-};
-
+#ifdef BOOT
 // Macro Assembler
 
 int IMEDD = 0x80;
@@ -828,14 +843,15 @@ int as_dovar = 61;
 int as_max = 62;
 int as_min = 63;
 #endif
+#endif
 
 /*
 * Main Program
 */
 int notmain(void)
 {
+	data = (int32_t*) cData;
 #ifdef BOOT
-	cData = (unsigned char*)data;
 	P = 512;
 	R = 0;
 
@@ -1411,8 +1427,8 @@ int notmain(void)
 	P = 0x90;
 	int USER = LABEL(8, 0X100, 0x10, IMMED - 12, ENDD, IMMED - 12, INTER, QUITT, 0);
 	// dump dictionary
-	P = 0;
-	for (; P < IZ; ) { CheckSum(); }
+	// P = 0;
+	// for (; P < IZ; ) { CheckSum(); }
 #endif
 
 	P = 0;
