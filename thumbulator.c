@@ -2320,6 +2320,7 @@ int run ( void )
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
+        if (0 == (instructions & 0x1f))
         while (read(read_fd, &c, 1) == 1) {
             input_buffer[input_write_ptr++] = c;
             if (input_write_ptr > MAX_INPUT) input_write_ptr = 0;
