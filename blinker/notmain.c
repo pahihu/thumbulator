@@ -155,7 +155,7 @@ int notmain ( void )
     fortytwo(16);
     fortytwo(36);
 
-    puts("Fib(25) = "); puti(fib(25)); nl();
+    puts("Fib(30) = "); puti(fib(30)); nl();
 
     return(0);
 }

@@ -36,13 +36,13 @@ hang:   b .
 .extern _bss_start
 .extern _bss_size
 _start:
-    ldr r0,=_data_start         @ 4000_0000
-    ldr r1,=_data_load_start    @ 0000_4c20
-    ldr r2,=_data_size          @ 4000_010c
+    ldr r0,=_data_start
+    ldr r1,=_data_load_start
+    ldr r2,=_data_size
     bl memcpy
-    ldr r0,=_bss_start          @ 4000_010c
+    ldr r0,=_bss_start
     ldr r1,=0
-    ldr r2,=_bss_size           @ 4001_0368
+    ldr r2,=_bss_size
     bl memset
     bl notmain
     swi 1
