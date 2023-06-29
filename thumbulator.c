@@ -58,6 +58,7 @@ void handle_disk(unsigned int wr);
 #define MAX_DISK    4
 int disk_count;
 int disk_fd[MAX_DISK];
+off_t disk_size[MAX_DISK];
 unsigned int disk_status;
 unsigned int disk_buffer[128];
 unsigned int disk_offset_low, disk_offset_high;
@@ -607,6 +608,8 @@ void handle_disk(unsigned int wr)
     fd = disk_fd[disk_ide_id];
 
     off = ((off_t)(disk_offset_high) << 32) + disk_offset_low;
+    if (off >= disk_size[disk_ide_id])
+        return;
     off = lseek(fd, off, SEEK_SET);
     if (-1 == off)
         return;
@@ -2487,6 +2490,7 @@ void handle_cmd_line(int argc, char *argv[])
 	int i, c, fd;
     char *p, *opt, *optarg;
 	unsigned int org = 0;
+    off_t off;
 
     if (1 == argc)
         usage();
@@ -2521,7 +2525,9 @@ void handle_cmd_line(int argc, char *argv[])
                 fprintf(stderr, "Cannot open %s!", optarg);
                 exit(1);
             }
-            disk_fd[disk_count++] = fd;
+            disk_fd[disk_count] = fd;
+            off = lseek(fd, 0, SEEK_END);
+            disk_size[disk_count++] = off - sizeof(disk_buffer);
             break;
 		case 'm': load_syms(optarg); break;
 		case 'o': org = htoi(optarg); break;
