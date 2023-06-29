@@ -53,6 +53,16 @@ unsigned int systick_reload;
 unsigned int systick_count;
 unsigned int systick_calibrate;
 
+void handle_disk(unsigned int wr);
+
+#define MAX_DISK    4
+int disk_count;
+int disk_fd[MAX_DISK];
+unsigned int disk_status;
+unsigned int disk_buffer[128];
+unsigned int disk_offset_low, disk_offset_high;
+unsigned int disk_ide_id;
+
 unsigned int halfadd;
 unsigned int cpsr;
 unsigned int handler_mode;
@@ -277,6 +287,10 @@ if(DBUG) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data);
             dump_counters();
             exit(0);
         case PERIPH_START: //periph
+            if (0xE0004000 <= addr && addr <= 0xE0004200) /* disk buffer */
+            {
+                disk_buffer[(addr - 0xE0004000) >> 2] = data;
+            }
             switch(addr)
             {
                 case PERIPH_START + 0:
@@ -286,6 +300,26 @@ if(DISS) fprintf(stderr,"]\n");
                     fflush(stdout);
                     break;
 
+                case 0xE0003000: /* disk offset low */
+                {
+                    disk_offset_low = data;
+                    break;
+                }
+                case 0xE0003008: /* disk offset high */
+                {
+                    disk_offset_high = data;
+                    break;
+                }
+                case 0xE0003010: /* select IDE ID */
+                {
+                    disk_ide_id = data;
+                    break;
+                }
+                case 0xE0003020: /* start disk operation */
+                {
+                    handle_disk (data);
+                    break;
+                }
                 case PERIPH_START + 0xE010:
                 {
                     unsigned int old;
@@ -391,6 +425,10 @@ if(DBUGRAMW) fprintf(stderr,"0x%08X\n",data);
             return(data);
         case PERIPH_START:
         {
+            if (0xE0004000 <= addr && addr <= 0xE0004200) /* disk buffer */
+            {
+                return disk_buffer[(addr - 0xE0004000) >> 2];
+            }
             switch(addr)
             {
                 case PERIPH_START + 4:
@@ -419,6 +457,11 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
                     read(read_fd, &data, 1);
 if (DBUG) fprintf(stderr, "%08x\n", data);
                     return (data);
+                }
+                case 0xE0003030: /* disk status */
+                {
+                    data = disk_status;
+                    return(data);
                 }
                 case 0xE000E010:
                 {
@@ -549,6 +592,30 @@ void wait_for_input(void)
         FD_SET(read_fd, &s_rd);
         select(read_fd + 1, &s_rd, NULL, NULL, NULL);
     }
+}
+//-------------------------------------------------------------------
+void handle_disk(unsigned int wr)
+{
+    ssize_t rc;
+    int fd;
+    off_t off;
+
+    disk_status = 0;
+
+    if (disk_ide_id >= disk_count)
+        return;
+    fd = disk_fd[disk_ide_id];
+
+    off = ((off_t)(disk_offset_high) << 32) + disk_offset_low;
+    off = lseek(fd, off, SEEK_SET);
+    if (-1 == off)
+        return;
+
+    if (wr)
+        rc = write(fd, disk_buffer, sizeof(disk_buffer));
+    else
+        rc = read(fd, disk_buffer, sizeof(disk_buffer));
+    disk_status = (rc < 0 || rc != sizeof(disk_buffer)) ? 0 : 1;
 }
 //-------------------------------------------------------------------
 int handle_bkpt(unsigned int bp, unsigned int arg)
@@ -2406,6 +2473,7 @@ static void usage()
     fprintf(stderr, "    -d <dump.out>      set dump output file name\n");
     fprintf(stderr, "    -e <entry>         set entry address\n");
     fprintf(stderr, "    -h                 help\n");
+    fprintf(stderr, "    -i <disk.img>      set next disk image\n");
     fprintf(stderr, "    -m <symbol.map>    load symbols (fmt: sym addr)\n");
     fprintf(stderr, "    -o <org>           set load address\n");
     fprintf(stderr, "    -p <port>          start TCP server on <port>\n");
@@ -2416,7 +2484,7 @@ static void usage()
 //-------------------------------------------------------------------
 void handle_cmd_line(int argc, char *argv[])
 {
-	int i, c;
+	int i, c, fd;
     char *p, *opt, *optarg;
 	unsigned int org = 0;
 
@@ -2443,6 +2511,18 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'c': cpuid = htoi(optarg); break;
 		case 'd': output_file_name = optarg; break;
 		case 'e': entry = htoi(optarg); break;
+        case 'i':
+            if (disk_count == MAX_DISK) {
+                fprintf(stderr, "Not enough disk slots (max. %d)!", MAX_DISK);
+                exit(1);
+            }
+            fd = open(optarg, O_RDWR);
+            if (fd < 0) {
+                fprintf(stderr, "Cannot open %s!", optarg);
+                exit(1);
+            }
+            disk_fd[disk_count++] = fd;
+            break;
 		case 'm': load_syms(optarg); break;
 		case 'o': org = htoi(optarg); break;
 		case 'p': start_server(atoi(optarg)); break;
@@ -2465,6 +2545,9 @@ int main ( int argc, char *argv[] )
     write_fd = STDOUT_FILENO;
     memset(rom,0xFF,sizeof(rom));
     memset(ram,0x00,sizeof(ram));
+    disk_count = 0;
+    for (ra = 0; ra < MAX_DISK; ra++)
+        disk_fd[ra] = -1;
     handle_cmd_line(argc, argv);
     flags = fcntl(read_fd, F_GETFL, 0);
     fcntl(read_fd, F_SETFL, flags | O_NONBLOCK);
@@ -2506,6 +2589,9 @@ int main ( int argc, char *argv[] )
     {
         fclose(fpvcd);
     }
+    for (ra = 0; ra < MAX_DISK; ra++)
+        if (disk_fd[ra] >= 0)
+            close(disk_fd[ra]);
     return(0);
 }
 //-------------------------------------------------------------------
