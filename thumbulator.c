@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <errno.h>
 
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+
 unsigned int read32 ( unsigned int );
 
 unsigned int read_register ( unsigned int );
@@ -64,6 +67,10 @@ unsigned int disk_buffer[128];
 unsigned int disk_offset_low, disk_offset_high;
 unsigned int disk_ide_id;
 
+unsigned int *frame_buffer;
+unsigned int fb_width, fb_height;
+unsigned int fb_port;
+
 unsigned int halfadd;
 unsigned int cpsr;
 unsigned int handler_mode;
@@ -77,6 +84,7 @@ char *output_file_name;
 
 int read_fd, write_fd;
 unsigned char input_buffer[MAX_INPUT];
+int input_eventX[MAX_INPUT], input_eventY[MAX_INPUT];
 size_t input_read_ptr = 0, input_write_ptr = 0;
 int socket_fd = -1;
 
@@ -90,6 +98,99 @@ unsigned long systick_ints;
 unsigned int symaddr[4096];
 char *symbols[4096];
 
+Display *xDisplay;
+Window xWin;
+XImage *xImg;
+int xScreenNum, imgWidth, imgHeight;
+//-------------------------------------------------------------------
+int input_char(int c, int X, int Y)
+{
+    input_buffer[input_write_ptr] = c;
+    input_eventX[input_write_ptr] = X;
+    input_eventY[input_write_ptr] = Y;
+    if (++input_write_ptr > MAX_INPUT) input_write_ptr = 0;
+    return c;
+}
+//-------------------------------------------------------------------
+void fb_open(int width, int height, char *data)
+{
+    imgWidth = width; imgHeight = height;
+
+	xDisplay = XOpenDisplay(NULL);
+	xScreenNum = DefaultScreen(xDisplay);
+	Window root = RootWindow(xDisplay,xScreenNum);
+	Visual *visual = DefaultVisual(xDisplay,xScreenNum);
+
+	xImg = XCreateImage(xDisplay,visual,DefaultDepth(xDisplay,xScreenNum),ZPixmap,0,data,imgWidth,imgHeight,32,0);
+    for (int x = 0; x < imgWidth; x++)
+        for (int y = 0; y < imgHeight; y++) {
+            unsigned  z = x + y;
+            XPutPixel(xImg, x, y, (z << 16) + (x << 8)+y);
+        }
+
+	xWin = XCreateSimpleWindow(xDisplay,root,50,50,imgWidth,imgHeight,1,0,0);
+	XSelectInput(xDisplay,xWin,ExposureMask|StructureNotifyMask|KeyPressMask|ButtonPressMask);
+	XMapWindow(xDisplay,xWin);
+}
+//-------------------------------------------------------------------
+void fb_flush()
+{
+    XFlush(xDisplay);
+}
+//-------------------------------------------------------------------
+int fb_qevent()
+{
+    XEvent event;
+
+    fb_flush();
+    while (XCheckMaskEvent(xDisplay,-1,&event)) {
+	    if (event.type == Expose ||
+            event.type == MappingNotify ||
+            event.type == KeyPress ||
+            event.type == ButtonPress)
+        {
+            XPutBackEvent(xDisplay,&event);
+            return 1;
+        }
+    }
+    return 0;
+}
+//-------------------------------------------------------------------
+int fb_event()
+{
+	XEvent event;
+
+    fb_flush();
+    while (1) {
+        XNextEvent(xDisplay,&event);
+	    if(event.type == Expose)
+	    {
+	        XPutImage(xDisplay,xWin,DefaultGC(xDisplay,xScreenNum),xImg,0,0,0,0,imgWidth,imgHeight);
+            return 0;
+	    }
+        else if (event.type == MappingNotify) {
+            XRefreshKeyboardMapping(&event.xmapping);
+            return 0;
+        }
+        else if (event.type == KeyPress) {
+            // KeySym sym = XLookupKeysym(&event.xkey,0);
+            KeySym ksym;
+            char buf[8];
+            if (XLookupString(&event.xkey, buf, 1, &ksym, NULL))
+                return input_char(buf[0], event.xkey.x, event.xkey.y);
+            return 0;
+        } else if (event.type == ButtonPress) {
+            return input_char(128 + event.xbutton.button, event.xkey.x, event.xkey.y);
+        }
+    }
+    return 0;
+}
+//-------------------------------------------------------------------
+void fb_close()
+{
+    XCloseDisplay(xDisplay);
+}
+//-------------------------------------------------------------------
 void init_syms()
 {
     memset(symaddr, 0, sizeof(symaddr));
@@ -288,9 +389,13 @@ if(DBUG) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data);
             dump_counters();
             exit(0);
         case PERIPH_START: //periph
-            if (0xE0004000 <= addr && addr <= 0xE0004200) /* disk buffer */
+            if (0xE2000000 <= addr && addr < 0xE2F00000) /* frame buffer */
             {
-                disk_buffer[(addr - 0xE0004000) >> 2] = data;
+                frame_buffer[(addr - 0xE2000000) >> 2] = data;
+            }
+            if (0xE3004000 <= addr && addr < 0xE3004200) /* disk buffer */
+            {
+                disk_buffer[(addr - 0xE3004000) >> 2] = data;
             }
             switch(addr)
             {
@@ -301,27 +406,32 @@ if(DISS) fprintf(stderr,"]\n");
                     fflush(stdout);
                     break;
 
-                case 0xE0003000: /* disk offset low */
+                case 0xE2F00000: /* frame buffer port */
+                {
+                    fb_port = data;
+                    break;
+                }
+                case 0xE3000000: /* disk offset low */
                 {
                     disk_offset_low = data;
                     break;
                 }
-                case 0xE0003008: /* disk offset high */
+                case 0xE3000008: /* disk offset high */
                 {
                     disk_offset_high = data;
                     break;
                 }
-                case 0xE0003010: /* select IDE ID */
+                case 0xE3000010: /* select IDE ID */
                 {
                     disk_ide_id = data;
                     break;
                 }
-                case 0xE0003020: /* start disk operation */
+                case 0xE3000020: /* start disk operation */
                 {
                     handle_disk (data);
                     break;
                 }
-                case PERIPH_START + 0xE010:
+                case 0xE000E010:
                 {
                     unsigned int old;
 
@@ -334,17 +444,17 @@ if(DISS) fprintf(stderr,"]\n");
                     }
                     break;
                 }
-                case PERIPH_START + 0xE014:
+                case 0xE000E014:
                 {
                     systick_reload=data&0x00FFFFFF;
                     break;
                 }
-                case PERIPH_START + 0xE018:
+                case 0xE000E018:
                 {
                     systick_count=data&0x00FFFFFF;
                     break;
                 }
-                case PERIPH_START + 0xE01C:
+                case 0xE000E01C:
                 {
                     systick_calibrate=data&0x00FFFFFF;
                     break;
@@ -426,13 +536,17 @@ if(DBUGRAMW) fprintf(stderr,"0x%08X\n",data);
             return(data);
         case PERIPH_START:
         {
-            if (0xE0004000 <= addr && addr <= 0xE0004200) /* disk buffer */
+            if (0xE2000000 <= addr && addr < 0xE2F00000) /* frame buffer */
             {
-                return disk_buffer[(addr - 0xE0004000) >> 2];
+                return frame_buffer[(addr - 0xE2000000) >> 2];
+            }
+            if (0xE3004000 <= addr && addr < 0xE3004200) /* disk buffer */
+            {
+                return disk_buffer[(addr - 0xE3004000) >> 2];
             }
             switch(addr)
             {
-                case PERIPH_START + 4:
+                case PERIPH_START + 4:  /* read next char */
                 {
 if (DBUGUART) printf("uart: [%lu %lu ", input_read_ptr, input_write_ptr);
                     if (input_read_ptr != input_write_ptr) {
@@ -443,7 +557,7 @@ if (DBUGUART) printf("%c]\n", data);
 if (DBUG) fprintf(stderr, "%08x\n", data);
                     return (data);
                 }
-                case PERIPH_START + 8:
+                case PERIPH_START + 8:  /* -1 if char available */
                 {
                     if (input_read_ptr != input_write_ptr) {
                         data = -1;
@@ -453,13 +567,37 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
 if (DBUG) fprintf(stderr, "%08x\n", data);
                     return (data);
                 }
-                case PERIPH_START + 12:
+                case PERIPH_START + 12: /* read a single char */
                 {
                     read(read_fd, &data, 1);
 if (DBUG) fprintf(stderr, "%08x\n", data);
                     return (data);
                 }
-                case 0xE0003030: /* disk status */
+                case PERIPH_START + 16: /* event X coord. */
+                {
+                    if (input_read_ptr != input_write_ptr)
+                        data = input_eventX[input_read_ptr];
+                    return (data);
+                }
+                case PERIPH_START + 20: /* event Y coord. */
+                {
+                    if (input_read_ptr != input_write_ptr)
+                        data = input_eventY[input_read_ptr];
+                    return (data);
+                }
+                case 0xE2F00000: /* frame buffer port */
+                {
+                    return fb_port;
+                }
+                case 0xE2F00010: /* frame buffer data */
+                {
+                    switch (fb_port) {
+                    case 1: data = fb_width; break;
+                    case 2: data = fb_height; break;
+                    }
+                    return(data);
+                }
+                case 0xE3000030: /* disk status */
                 {
                     data = disk_status;
                     return(data);
@@ -2390,10 +2528,13 @@ int run ( void )
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
-        if (0 == (instructions & 0x1f))
-        while (read(read_fd, &c, 1) == 1) {
-            input_buffer[input_write_ptr++] = c;
-            if (input_write_ptr > MAX_INPUT) input_write_ptr = 0;
+        if (0 == (instructions & 0x1f)) {
+            if (frame_buffer && fb_qevent()) {
+                fb_event();
+            } else {
+                while (read(read_fd, &c, 1) == 1)
+                    input_char(c, -1, -1);
+            }
         }
         if(execute()) break;
     }
@@ -2466,7 +2607,7 @@ void stop_server(void)
 	close(socket_fd);
 }
 //-------------------------------------------------------------------
-const char options[] = "c:d:e:hm:o:p:sv";
+const char options[] = "c:d:e:g:h:m:o:p:sv?";
 //-------------------------------------------------------------------
 static void usage()
 {
@@ -2475,22 +2616,24 @@ static void usage()
     fprintf(stderr, "    -c <cpuid>         set CPUID\n");
     fprintf(stderr, "    -d <dump.out>      set dump output file name\n");
     fprintf(stderr, "    -e <entry>         set entry address\n");
-    fprintf(stderr, "    -h                 help\n");
-    fprintf(stderr, "    -i <disk.img>      set next disk image\n");
+    fprintf(stderr, "    -g WxH             init gfx framebuffer\n");
+    fprintf(stderr, "    -h <disk.img>      set next disk image\n");
     fprintf(stderr, "    -m <symbol.map>    load symbols (fmt: sym addr)\n");
     fprintf(stderr, "    -o <org>           set load address\n");
     fprintf(stderr, "    -p <port>          start TCP server on <port>\n");
     fprintf(stderr, "    -s                 enable disassembly.\n");
     fprintf(stderr, "    -v                 enable VCD output.\n");
+    fprintf(stderr, "    -?                 help\n");
     exit(1);
 }
 //-------------------------------------------------------------------
 void handle_cmd_line(int argc, char *argv[])
 {
 	int i, c, fd;
-    char *p, *opt, *optarg;
+    char *p, *opt, *optarg, tmp[128];
 	unsigned int org = 0;
     off_t off;
+    int mem_size;
 
     if (1 == argc)
         usage();
@@ -2515,7 +2658,27 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'c': cpuid = htoi(optarg); break;
 		case 'd': output_file_name = optarg; break;
 		case 'e': entry = htoi(optarg); break;
-        case 'i':
+        case 'g':
+            strcpy(tmp, optarg);
+            p = strchr(tmp, 'x');
+            if (NULL == p) {
+                fprintf(stderr,"Define the resolution as WxH!");
+                exit(1);
+            }
+            *p = 0;
+            fb_width  = atoi(tmp); fb_height = atoi(p + 1);
+            mem_size = fb_width * fb_height * 4;
+            if (mem_size > 15*1024*1024) {
+                fprintf(stderr, "Max. 15MB frame buffer supported!");
+                exit(1);
+            }
+            frame_buffer = malloc(mem_size);
+            if (NULL == frame_buffer) {
+                fprintf(stderr, "Cannot allocate frame buffer!");
+                exit(1);
+            }
+            break;
+        case 'h':
             if (disk_count == MAX_DISK) {
                 fprintf(stderr, "Not enough disk slots (max. %d)!", MAX_DISK);
                 exit(1);
@@ -2534,7 +2697,7 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'p': start_server(atoi(optarg)); break;
         case 's': DISS = 1; break;
         case 'v': output_vcd = 1; break;
-        case 'h':
+        case '?':
         default:  usage(); break;
 		}
 	}
@@ -2551,6 +2714,8 @@ int main ( int argc, char *argv[] )
     write_fd = STDOUT_FILENO;
     memset(rom,0xFF,sizeof(rom));
     memset(ram,0x00,sizeof(ram));
+    frame_buffer = NULL;
+    fb_width = fb_height = 0;
     disk_count = 0;
     for (ra = 0; ra < MAX_DISK; ra++)
         disk_fd[ra] = -1;
@@ -2587,6 +2752,9 @@ int main ( int argc, char *argv[] )
         fprintf(fpvcd,"b0 inst\n");
     }
 
+    if (frame_buffer)
+        fb_open(fb_width, fb_height, (char*) frame_buffer);
+
     run();
     if (socket_fd != -1)
         stop_server();
@@ -2595,6 +2763,8 @@ int main ( int argc, char *argv[] )
     {
         fclose(fpvcd);
     }
+    if (frame_buffer)
+        fb_close();
     for (ra = 0; ra < MAX_DISK; ra++)
         if (disk_fd[ra] >= 0)
             close(disk_fd[ra]);
