@@ -1,21 +1,22 @@
 #include "nolib.h"
 
-extern void PUT32 ( uint32_t, uint32_t );
-extern uint32_t  GET32 ( uint32_t );
 #define THUL_UART_BASE 0xE0000000
+#define THUL_UART_TX  ((uint32_t*)(THUL_UART_BASE + 0x00))
+#define THUL_UART_RX  (( int32_t*)(THUL_UART_BASE + 0x04))
+#define THUL_UART_QRX (( int32_t*)(THUL_UART_BASE + 0x08))
 //------------------------------------------------------------------------
 void uart_tx ( uint32_t c )
 {
-    PUT32(THUL_UART_BASE+0x00,c);
+    THUL_UART_TX[0] = c;
 }
 int uart_rx ( void )
 {
-    return GET32(THUL_UART_BASE+0x04);
+    return THUL_UART_RX[0];
 }
 //------------------------------------------------------------------------
 int uart_qrx (void)
 {
-    return GET32(THUL_UART_BASE+0x08);
+    return THUL_UART_QRX[0];
 }
 //------------------------------------------------------------------------
 void putc(int c)
@@ -165,3 +166,4 @@ void exit(int status)
     asm("swi 1");
 }
 //------------------------------------------------------------------------
+// vim:set ts=4 sw=4 et:

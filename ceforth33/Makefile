@@ -8,20 +8,11 @@ CFLAGS = -Wall -mthumb $(OPT) -nostdlib -ffreestanding #-DBOOT=1
 
 all : ceforth33.bin
 
-# vectors.o : vectors.s
-# 	$(ARMGNU)-as vectors.s -o vectors.o
-
-# putget.o : putget.s
-# 	$(ARMGNU)-as putget.s -o putget.o
-
 SRC = ceforth33.c nolib.c
-OBJ = vectors.o putget.o $(SRC:.c=.o)
+OBJ = vectors.o $(SRC:.c=.o)
 
 vectors.o : vectors.s
 	$(ARMGNU)-as vectors.s -o vectors.o
-
-putget.o : putget.s
-	$(ARMGNU)-as putget.s -o putget.o
 
 ceforth33.bin : $(OBJ) memmap
 	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T memmap -o ceforth33.elf -lgcc
