@@ -1,4 +1,5 @@
 CC = gcc -flto
+OPTFLAGS = -O3
 CFLAGS = $(OPTFLAGS) -I /opt/X11/include
 LDFLAGS = -L /opt/X11/lib -lX11
 
