@@ -84,7 +84,11 @@ char *output_file_name;
 
 int read_fd, write_fd;
 unsigned char input_buffer[MAX_INPUT];
-int input_eventX[MAX_INPUT], input_eventY[MAX_INPUT];
+typedef enum {EvtKey, EvtButton} EvtType;
+struct {
+    EvtType typ;
+    int X, Y;
+} input_event[MAX_INPUT];
 size_t input_read_ptr = 0, input_write_ptr = 0;
 int socket_fd = -1;
 
@@ -103,11 +107,12 @@ Window xWin;
 XImage *xImg;
 int xScreenNum, imgWidth, imgHeight;
 //-------------------------------------------------------------------
-int input_char(int c, int X, int Y)
+int input_char(int c, EvtType typ, int X, int Y)
 {
     input_buffer[input_write_ptr] = c;
-    input_eventX[input_write_ptr] = X;
-    input_eventY[input_write_ptr] = Y;
+    input_event[input_write_ptr].typ = typ;
+    input_event[input_write_ptr].X = X;
+    input_event[input_write_ptr].Y = Y;
     if (++input_write_ptr > MAX_INPUT) input_write_ptr = 0;
     return c;
 }
@@ -177,10 +182,10 @@ int fb_event()
             KeySym ksym;
             char buf[8];
             if (XLookupString(&event.xkey, buf, 1, &ksym, NULL))
-                return input_char(buf[0], event.xkey.x, event.xkey.y);
+                return input_char(buf[0], EvtKey, event.xkey.x, event.xkey.y);
             return 0;
         } else if (event.type == ButtonPress) {
-            return input_char(128 + event.xbutton.button, event.xkey.x, event.xkey.y);
+            return input_char(128 + event.xbutton.button, EvtButton, event.xkey.x, event.xkey.y);
         }
     }
     return 0;
@@ -574,16 +579,22 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
 if (DBUG) fprintf(stderr, "%08x\n", data);
                     return (data);
                 }
-                case PERIPH_START + 16: /* event X coord. */
+                case PERIPH_START + 16: /* event type */
                 {
                     if (input_read_ptr != input_write_ptr)
-                        data = input_eventX[input_read_ptr];
+                        data = input_event[input_read_ptr].typ;
                     return (data);
                 }
-                case PERIPH_START + 20: /* event Y coord. */
+                case PERIPH_START + 20: /* event X coord. */
                 {
                     if (input_read_ptr != input_write_ptr)
-                        data = input_eventY[input_read_ptr];
+                        data = input_event[input_read_ptr].X;
+                    return (data);
+                }
+                case PERIPH_START + 24: /* event Y coord. */
+                {
+                    if (input_read_ptr != input_write_ptr)
+                        data = input_event[input_read_ptr].Y;
                     return (data);
                 }
                 case 0xE2F00000: /* frame buffer port */
@@ -2534,7 +2545,7 @@ int run ( void )
                 fb_event();
             } else {
                 while (read(read_fd, &c, 1) == 1)
-                    input_char(c, -1, -1);
+                    input_char(c, EvtKey, -1, -1);
             }
         }
         if(execute()) break;
