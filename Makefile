@@ -9,7 +9,7 @@ thumbulator : thumbulator.o
 	ls -l thumbulator
 
 clean :
-	rm -f thumbulator
+	rm -f thumbulator thumbulator.o
 	rm -f output.vcd
 
 

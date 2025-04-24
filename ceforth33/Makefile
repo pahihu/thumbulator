@@ -1,8 +1,8 @@
 RM = rm -f
-ARMGNU ?= arm-none-elf
+ARMGNU ?= arm-none-eabi
 
 # COPS = -Wall -mthumb -O2 -fomit-frame-pointer -nostdlib -nostartfiles -ffreestanding
-CC = arm-none-elf-gcc -fsigned-char
+CC = $(ARMGNU)-gcc -fsigned-char
 OPT = -O2
 CFLAGS = -Wall -mthumb $(OPT) -nostdlib -ffreestanding #-DBOOT=1
 

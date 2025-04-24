@@ -32,7 +32,7 @@ COPS = -Wall -O3 -mthumb -nostdlib -nostartfiles -ffreestanding
 AOPS = --warn --fatal-warnings
 
 
-OOPS = -std-compile-opts -strip-debug -disable-simplify-libcalls
+OOPS = -O2 -strip-debug -disable-simplify-libcalls
 LOPS = -Wall -m32 -emit-llvm -disable-simplify-libcalls
 LLCOPS = -march=thumb -disable-simplify-libcalls  -mattr=v5t
 
