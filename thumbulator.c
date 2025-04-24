@@ -19,6 +19,7 @@ unsigned int read32 ( unsigned int );
 
 unsigned int read_register ( unsigned int );
 
+#define ROM_START       0x00000000
 #define RAM_START       0x40000000
 #define PERIPH_START    0xE0000000
 
@@ -29,6 +30,7 @@ static int DBUGREG   = 0;
 static int DBUG      = 0;
 static int DBUGUART  = 0;
 static int DISS      = 0;
+static int DISR      = 0;
 
 #define MINUS_ONE   ((unsigned int)(~0))
 
@@ -80,15 +82,15 @@ unsigned int cpuid;
 unsigned int entry = 0;
 char *output_file_name;
 
-#define MAX_INPUT   (64 * 1024)
+#define THOR_MAXINPUT   (64 * 1024)
 
 int read_fd, write_fd;
-unsigned char input_buffer[MAX_INPUT];
+unsigned char input_buffer[THOR_MAXINPUT];
 typedef enum {EvtKey, EvtButton} EvtType;
 struct {
     EvtType typ;
     int X, Y;
-} input_event[MAX_INPUT];
+} input_event[THOR_MAXINPUT];
 size_t input_read_ptr = 0, input_write_ptr = 0;
 int socket_fd = -1;
 
@@ -113,7 +115,7 @@ int input_char(int c, EvtType typ, int X, int Y)
     input_event[input_write_ptr].typ = typ;
     input_event[input_write_ptr].X = X;
     input_event[input_write_ptr].Y = Y;
-    if (++input_write_ptr > MAX_INPUT) input_write_ptr = 0;
+    if (++input_write_ptr > THOR_MAXINPUT) input_write_ptr = 0;
     return c;
 }
 //-------------------------------------------------------------------
@@ -274,17 +276,30 @@ void load_syms(char *name)
 //-------------------------------------------------------------------
 void dump_registers(void) {
     int i;
+    static char *flags="NZCVQ000000000000000000000000000";
+    unsigned int mask;
+    char *p;
 
-    fprintf(stderr, "Registers:\n");
+    fprintf(stderr, "\nRegisters:\n");
+    fprintf(stderr, "cpsr: ");
+    mask = 0x80000000;
+    for (p=&flags[0];*p;p++) {
+        if ('0' == *p) fprintf(stderr,"%c",(cpsr&mask)?'1':'0');
+        else fprintf(stderr,"%c",(cpsr&mask)?*p:'-');
+        mask >>= 1;
+    }
+    fprintf(stderr,"\n");
     for (i = 0; i < 16; i++) {
         switch (i) {
-            case 13: fprintf(stderr, "sp:  "); break;
-            case 14: fprintf(stderr, "lr:  "); break;
-            case 15: fprintf(stderr, "pc:  "); break;
-            default: fprintf(stderr, "r%d: %s", i, i < 10 ? " " : ""); break;
+            case 13: fprintf(stderr, "  sp: "); break;
+            case 14: fprintf(stderr, "  lr: "); break;
+            case 15: fprintf(stderr, "  pc: "); break;
+            default: fprintf(stderr, " %sr%d: ", i < 10 ? " " : "", i); break;
         }
-        fprintf(stderr, "%08x\n", reg_norm[i]);
-    }   
+        fprintf(stderr, "%08x   ", reg_norm[i]);
+        if (0 == ((i+1) % 4)) fprintf(stderr,"\n");
+    }
+    fprintf(stderr,"\n");
 }       
 //-------------------------------------------------------------------
 void dump_counters ( void )
@@ -308,7 +323,7 @@ if(DBUGFETCH) fprintf(stderr,"fetch16(0x%08X)=",addr);
 if(DBUG) fprintf(stderr,"fetch16(0x%08X)=",addr);
     switch(addr&0xF0000000)
     {
-        case 0x00000000: //ROM
+        case ROM_START: //ROM
             addr&=ROMADDMASK;
 
 //if(addr<0x50)
@@ -330,7 +345,7 @@ if(DBUGFETCH) fprintf(stderr,"0x%04X\n",data);
 if(DBUG) fprintf(stderr,"0x%04X\n",data);
             return(data);
     }
-    fprintf(stderr,"fetch16(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
+    fprintf(stderr,"\nfetch16(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
     exit(1);
 }
 //-------------------------------------------------------------------
@@ -342,7 +357,7 @@ if(DBUGFETCH) fprintf(stderr,"fetch32(0x%08X)=",addr);
 if(DBUG) fprintf(stderr,"fetch32(0x%08X)=",addr);
     switch(addr&0xF0000000)
     {
-        case 0x00000000: //ROM
+        case ROM_START: //ROM
             if(addr<0x50)
             {
                 data=read32(addr);
@@ -351,7 +366,7 @@ if(DBUG) fprintf(stderr,"0x%08X\n",data);
                 if(addr==0x00000000) return(data);
                 if(addr==0x00000004) return(data);
                 if(addr==0x0000003C) return(data);
-                fprintf(stderr,"fetch32(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
+                fprintf(stderr,"\nfetch32(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
                 exit(1);
             }
         case RAM_START: //RAM
@@ -362,7 +377,7 @@ if(DBUGFETCH) fprintf(stderr,"0x%08X\n",data);
 if(DBUG) fprintf(stderr,"0x%08X\n",data);
             return(data);
     }
-    fprintf(stderr,"fetch32(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
+    fprintf(stderr,"\nfetch32(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
     exit(1);
 }
 //-------------------------------------------------------------------
@@ -382,7 +397,7 @@ if(DBUGRAM) fprintf(stderr,"write16(0x%08X,0x%04X)\n",addr,data);
             ram[addr]=data&0xFFFF;
             return;
     }
-    fprintf(stderr,"write16(0x%08X,0x%04X), abort pc 0x%04X\n",addr,data,read_register(15));
+    fprintf(stderr,"\nwrite16(0x%08X,0x%04X), abort pc 0x%04X\n",addr,data,read_register(15));
     exit(1);
 }
 //-------------------------------------------------------------------
@@ -486,14 +501,14 @@ if(DISS) fprintf(stderr,"]\n");
                     return;
                 }
             }
-        case 0x00000000:
+        /* case ROM_START: disable ROM write */
         case RAM_START: //RAM
 if(DBUGRAMW) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data);
             write16(addr+0,(data>> 0)&0xFFFF);
             write16(addr+2,(data>>16)&0xFFFF);
             return;
     }
-    fprintf(stderr,"write32(0x%08X,0x%08X), abort pc 0x%04X\n",addr,data,read_register(15));
+    fprintf(stderr,"\nwrite32(0x%08X,0x%08X), abort pc 0x%04X\n",addr,data,read_register(15));
     exit(1);
 }
 //-----------------------------------------------------------------
@@ -506,7 +521,7 @@ unsigned int read16 ( unsigned int addr )
 if(DBUG) fprintf(stderr,"read16(0x%08X)=",addr);
     switch(addr&0xF0000000)
     {
-        case 0x00000000: //ROM
+        case ROM_START: //ROM
             addr&=ROMADDMASK;
             addr>>=1;
             data=rom[addr];
@@ -521,7 +536,7 @@ if(DBUG) fprintf(stderr,"0x%04X\n",data);
 if(DBUGRAM) fprintf(stderr,"0x%04X\n",data);
             return(data);
     }
-    fprintf(stderr,"read16(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
+    fprintf(stderr,"\nread16(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
     exit(1);
 }
 //-------------------------------------------------------------------
@@ -532,7 +547,7 @@ unsigned int read32 ( unsigned int addr )
 if(DBUG) fprintf(stderr,"read32(0x%08X)=",addr);
     switch(addr&0xF0000000)
     {
-        case 0x00000000: //ROM
+        case ROM_START: //ROM
         case RAM_START: //RAM
 if(DBUGRAMW) fprintf(stderr,"read32(0x%08X)=",addr);
             data =read16(addr+0);
@@ -557,7 +572,7 @@ if(DBUGRAMW) fprintf(stderr,"0x%08X\n",data);
 if (DBUGUART) printf("uart: [%lu %lu ", input_read_ptr, input_write_ptr);
                     if (input_read_ptr != input_write_ptr) {
                         data = input_buffer[input_read_ptr++];
-                        if (input_read_ptr == MAX_INPUT) input_read_ptr = 0;
+                        if (input_read_ptr == THOR_MAXINPUT) input_read_ptr = 0;
                     }
 if (DBUGUART) printf("%c]\n", data);
 if (DBUG) fprintf(stderr, "%08x\n", data);
@@ -644,7 +659,7 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
             }
         }
     }
-    fprintf(stderr,"read32(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
+    fprintf(stderr,"\nread32(0x%08X), abort pc 0x%04X\n",addr,read_register(15));
     exit(1);
 }
 //-------------------------------------------------------------------
@@ -903,7 +918,8 @@ int execute ( void )
     inst=fetch16(pc-2);
     pc+=2;
     write_register(15,pc);
-if(DISS) {
+    if(DISS) {
+        if (DISR) dump_registers();
         fprintf(stderr,"--- 0x%08X: 0x%04X ",(pc-4),inst);
         sym = get_sym(pc-4);
     }
@@ -1035,7 +1051,7 @@ if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x7;
         rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,PC,#0x%02X",rd,rb);
+if(DISS) fprintf(stderr,"add   r%u,pc,#0x%02X",rd,rb);
         ra=read_register(15);
         rc=(ra&(~3))+rb;
         write_register(rd,rc);
@@ -1048,7 +1064,7 @@ if(DISS) fprintf(stderr,"add   r%u,PC,#0x%02X",rd,rb);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x7;
         rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,SP,#0x%02X",rd,rb);
+if(DISS) fprintf(stderr,"add   r%u,sp,#0x%02X",rd,rb);
         ra=read_register(13);
         rc=ra+rb;
         write_register(rd,rc);
@@ -1060,7 +1076,7 @@ if(DISS) fprintf(stderr,"add   r%u,SP,#0x%02X",rd,rb);
     {
         rb=(inst>>0)&0x7F;
         rb<<=2;
-if(DISS) fprintf(stderr,"add   SP,#0x%02X",rb);
+if(DISS) fprintf(stderr,"add   sp,#0x%02X",rb);
         ra=read_register(13);
         rc=ra+rb;
         write_register(13,rc);
@@ -1616,7 +1632,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[PC+#0x%X] ",rd,rb);
+if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
         ra=read_register(15);
         ra&=~3;
         rb+=ra;
@@ -1632,7 +1648,7 @@ if(DISS) fprintf(stderr,";@ 0x%X",rb);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[SP+#0x%X]",rd,rb);
+if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
         ra=read_register(13);
         //ra&=~3;
         rb+=ra;
@@ -2264,7 +2280,7 @@ if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
         rb=(inst>>0)&0xFF;
         rd=(inst>>8)&0x07;
         rb<<=2;
-if(DISS) fprintf(stderr,"str   r%u,[SP,#0x%X]",rd,rb);
+if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
         rb=read_register(13)+rb;
 //fprintf(stderr,"0x%08X\n",rb);
         rc=read_register(rd);
@@ -2403,7 +2419,7 @@ if(DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
     {
         rb=inst&0x7F;
         rb<<=2;
-if(DISS) fprintf(stderr,"sub   SP,#0x%02X",rb);
+if(DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
         ra=read_register(13);
         ra-=rb;
         write_register(13,ra);
@@ -2566,8 +2582,9 @@ unsigned int load_binary(unsigned int addr, char *name)
 		exit(1);
 	}
 	fstat(f, &st);
-	memset(&rom[addr >> 1], 0x0a0a, st.st_size + 1);
-	r = read(f, &rom[addr >> 1], st.st_size);
+    r = st.st_size;
+	memset(&rom[addr >> 1], 0x0a0a, (r + 1) & ~0x1);
+	r = read(f, &rom[addr >> 1], r);
 	close(f);
 	return (r + 1) & ~0x1;
 }
@@ -2619,7 +2636,7 @@ void stop_server(void)
 	close(socket_fd);
 }
 //-------------------------------------------------------------------
-const char options[] = "c:d:e:g:h:m:o:p:sv?";
+const char options[] = "c:d:e:g:h:m:o:p:rsv?";
 //-------------------------------------------------------------------
 static void usage()
 {
@@ -2633,8 +2650,9 @@ static void usage()
     fprintf(stderr, "    -m <symbol.map>    load symbols (fmt: sym addr)\n");
     fprintf(stderr, "    -o <org>           set load address\n");
     fprintf(stderr, "    -p <port>          start TCP server on <port>\n");
-    fprintf(stderr, "    -s                 enable disassembly.\n");
-    fprintf(stderr, "    -v                 enable VCD output.\n");
+    fprintf(stderr, "    -r                 dump registers in disassembly\n");
+    fprintf(stderr, "    -s                 enable disassembly\n");
+    fprintf(stderr, "    -v                 enable VCD output\n");
     fprintf(stderr, "    -?                 help\n");
     exit(1);
 }
@@ -2707,6 +2725,7 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'm': load_syms(optarg); break;
 		case 'o': org = htoi(optarg); break;
 		case 'p': start_server(atoi(optarg)); break;
+        case 'r': DISR = 1; break;
         case 's': DISS = 1; break;
         case 'v': output_vcd = 1; break;
         case '?':

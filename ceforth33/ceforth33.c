@@ -27,28 +27,37 @@
 #include "nolib.h"
 #include <stdarg.h>
 
+# define    PTR(x)  (255&(x))
 # define	FALSE	0
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE
 # define 	LOWER(x,y) ((uint32_t)(x)<(uint32_t)(y))
-# define	pop	top = stack[(char) S--]
-# define	push	stack[(char) ++S] = top; top =
-# define	popR rack[(char)R--]
-# define	pushR rack[(char)++R]
-# define        N       stack[(char)S]
+# define	pop	    top = stack[PTR(S--)]
+# define	push	stack[PTR(++S)] = top; top =
+# define	popR    rack[PTR(R--)]
+# define	pushR   rack[PTR(++R)]
+# define    N       stack[PTR(S)]
 int32_t *data;
 
-#ifdef BOOT
+#if defined(BOOT) || defined(HOSTED)
+#define notmain     main
+#define IMAGE_SIZE  65536
+#else
+#define IMAGE_SIZE
+#endif
+
+#if defined(BOOT)
+
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-char R = 0;
-char S = 0;
-int32_t  P, IP, thread, len;
-int32_t  IZ;
+int  R = 0;
+int  S = 0;
+int32_t P, IP, thread, len;
+int32_t IZ;
 
-unsigned char cData[64000] = { 0, 0, 0, 0 };
+unsigned char cData[65536] = { 0, 0, 0, 0 };
 #else
-unsigned char cData[] = {
+unsigned char cData[IMAGE_SIZE] = {
 #include "dict32le.h"
 };
 #endif
@@ -61,15 +70,15 @@ unsigned char cData[] = {
 	IP += 4; \
 }
 #define _DROP    pop
-#define _OVER    push stack[(char)S - 1];
+#define _OVER    push stack[PTR(S - 1)];
 
 void vfm(int32_t p)
 {
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-char R;
-char S;
+int R;
+int S;
 int32_t top;
 int32_t  P, IP, WP;
 unsigned char bytecode;
@@ -120,14 +129,14 @@ case 5: // dolit
 break;
 case 6: // dolist
 {
-	rack[(char)++R] = IP;
+	rack[PTR(++R)] = IP;
 	IP = WP;
 	DONEXT;
 }
 break;
 case 7: // exitt
 {
-	IP = (int32_t)rack[(char)R--];
+	IP = (int32_t)rack[PTR(R--)];
 	DONEXT;
 }
 break;
@@ -140,8 +149,8 @@ case 8: // execu
 break;
 case 9: // donext
 {
-	if (rack[(char)R]) {
-		rack[(char)R] -= 1;
+	if (rack[PTR(R)]) {
+		rack[PTR(R)] -= 1;
 		IP = data[IP >> 2];
 	}
 	else {
@@ -167,7 +176,7 @@ case 11: // bran
 break;
 case 12: // store
 {
-	data[top >> 2] = stack[(char)S--];
+	data[top >> 2] = stack[PTR(S--)];
 	pop;
 }
 break;
@@ -178,7 +187,7 @@ case 13: // at
 break;
 case 14: // cstor
 {
-	cData[top] = (char)stack[(char)S--];
+	cData[top] = (char)stack[PTR(S--)];
 	pop;
 }
 break;
@@ -193,17 +202,17 @@ case 17: // rpsto
         goto Nop;
 case 18: // rfrom
 {
-	push rack[(char)R--];
+	push rack[PTR(R--)];
 }
 break;
 case 19: // rat
 {
-	push rack[(char)R];
+	push rack[PTR(R)];
 }
 break;
 case 20: // tor
 {
-	rack[(char)++R] = top;
+	rack[PTR(++R)] = top;
 	pop;
 }
 break;
@@ -218,19 +227,19 @@ case 23: // drop
 break;
 case 24: // dup
 {
-	stack[(char) ++S] = top;
+	stack[PTR(++S)] = top;
 }
 break;
 case 25: // swap
 {
 	WP = top;
-	top = stack[(char)S];
-	stack[(char)S] = WP;
+	top = N;
+	N = WP;
 }
 break;
 case 26: // over
 {
-	push stack[(char)S - 1];
+	push stack[PTR(S - 1)];
 }
 break;
 case 27: // zless
@@ -240,23 +249,23 @@ case 27: // zless
 break;
 case 28: // andd
 {
-	top &= stack[(char)S--];
+	top &= stack[PTR(S--)];
 }
 break;
 case 29: // orr
 {
-	top |= stack[(char)S--];
+	top |= stack[PTR(S--)];
 }
 break;
 case 30: // xorr
 {
-	top ^= stack[(char)S--];
+	top ^= stack[PTR(S--)];
 }
 break;
 case 31: // uplus
 {
-	stack[(char)S] += top;
-	top = LOWER(stack[(char)S], top);
+	N += top;
+	top = LOWER(N, top);
 }
 break;
 case 32: // next
@@ -268,14 +277,14 @@ case 32: // next
 break;
 case 33: // qdup
 {
-	if (top) stack[(char) ++S] = top;
+	if (top) stack[PTR(++S)] = top;
 }
 break;
 case 34: // rot
 {
-	WP = stack[(char)S - 1];
-	stack[(char)S - 1] = stack[(char)S];
-	stack[(char)S] = top;
+	WP = stack[PTR(S - 1)];
+	stack[PTR(S - 1)] = N;
+	N = top;
 	top = WP;
 }
 break;
@@ -291,7 +300,7 @@ case 36: // ddup
 break;
 case 37: // plus
 {
-	top += stack[(char)S--];
+	top += stack[PTR(S--)];
 }
 break;
 case 38: // inver
@@ -314,7 +323,7 @@ case 40: // dnega
 break;
 case 41: // subb
 {
-	top = stack[(char)S--] - top;
+	top = stack[PTR(S--)] - top;
 }
 break;
 case 42: // abss
@@ -325,99 +334,99 @@ case 42: // abss
 break;
 case 43: // equal
 {
-	top = (stack[(char)S--] == top) LOGICAL;
+	top = (stack[PTR(S--)] == top) LOGICAL;
 }
 break;
 case 44: // uless
 {
-	top = LOWER(stack[(char)S], top) LOGICAL; (char)S--;
+	top = LOWER(N, top) LOGICAL; S--;
 }
 break;
 case 45: // less
 {
-	top = (stack[(char)S--] < top) LOGICAL;
+	top = (stack[PTR(S--)] < top) LOGICAL;
 }
 break;
 case 46: // ummod
 {
 	d = (int64_t)((uint32_t)top);
-	m = (int64_t)((uint32_t)stack[(char)S]);
-	n = (int64_t)((uint32_t)stack[(char)S - 1]);
+	m = (int64_t)((uint32_t)N);
+	n = (int64_t)((uint32_t)stack[PTR(S - 1)]);
 	n += m << 32;
 	pop;
 	top = (uint32_t)(n / d);
-	stack[(char)S] = (uint32_t)(n % d);
+	N = (uint32_t)(n % d);
 }
 break;
 case 47: // msmod
 {
 	d = (int64_t)((int32_t)top);
-	m = (int64_t)((int32_t)stack[(char)S]);
-	n = (int64_t)((int32_t)stack[(char)S - 1]);
+	m = (int64_t)((int32_t)N);
+	n = (int64_t)((int32_t)stack[PTR(S - 1)]);
 	n += m << 32;
 	pop;
 	top = (int32_t)(n / d);
-	stack[(char)S] = (int32_t)(n % d);
+	N = (int32_t)(n % d);
 }
 break;
 case 48: // slmod
 {
 	if (top != 0) {
-		WP = stack[(char)S] / top;
-		stack[(char)S] %= top;
+		WP = N / top;
+		N %= top;
 		top = WP;
 	}
 }
 break;
 case 49: // mod
 {
-	top = (top) ? stack[(char)S--] % top : stack[(char)S--];
+	top = (top) ? stack[PTR(S--)] % top : stack[PTR(S--)];
 }
 break;
 case 50: // slash
 {
-	top = (top) ? stack[(char)S--] / top : (stack[(char)S--], 0);
+	top = (top) ? stack[PTR(S--)] / top : (stack[PTR(S--)], 0);
 }
 break;
 case 51: // umsta
 {
 	d = (uint64_t)top;
-	m = (uint64_t)stack[(char)S];
+	m = (uint64_t)N;
 	m *= d;
 	top = (uint32_t)(m >> 32);
-	stack[(char)S] = (uint32_t)m;
+	N = (uint32_t)m;
 }
 break;
 case 52: // star
 {
-	top *= stack[(char)S--];
+	top *= stack[PTR(S--)];
 }
 break;
 case 53: // mstar
 {
 	d = (int64_t)top;
-	m = (int64_t)stack[(char)S];
+	m = (int64_t)N;
 	m *= d;
 	top = (int32_t)(m >> 32);
-	stack[(char)S] = (int32_t)m;
+	N = (int32_t)m;
 }
 break;
 case 54: // ssmod
 {
 	d = (int64_t)top;
-	m = (int64_t)stack[(char)S];
-	n = (int64_t)stack[(char)S - 1];
+	m = (int64_t)N;
+	n = (int64_t)stack[PTR(S - 1)];
 	n *= m;
 	pop;
 	top = (int32_t)(n / d);
-	stack[(char)S] = (int32_t)(n % d);
+	N = (int32_t)(n % d);
 }
 break;
 case 55: // stasl
 {
 	d = (int64_t)top;
-	m = (int64_t)stack[(char)S];
-	n = (int64_t)stack[(char)S - 1];
+	m = (int64_t)N;
+	n = (int64_t)stack[PTR(S - 1)];
 	n *= m;
 	pop; pop;
 	top = (int32_t)(n / d);
@@ -425,18 +434,18 @@ case 55: // stasl
 break;
 case 56: // pick
 {
-	top = stack[(char)S - (char)top];
+	top = stack[PTR(S - top)];
 }
 break;
 case 57: // pstor
 {
-	data[top >> 2] += stack[(char)S--], pop;
+	data[top >> 2] += stack[PTR(S--)], pop;
 }
 break;
 case 58: // dstor
 {
-	data[top >> 2] = stack[(char)S--];
-	data[(top >> 2) + 1] = stack[(char)S--];
+	data[top >> 2] = stack[PTR(S--)];
+	data[(top >> 2) + 1] = stack[PTR(S--)];
 	pop;
 }
 break;
@@ -449,7 +458,7 @@ case 59: // dat
 break;
 case 60: // count
 {
-	stack[(char) ++S] = top + 1;
+	stack[PTR(++S)] = top + 1;
 	top = cData[top];
 }
 break;
@@ -460,13 +469,13 @@ case 61: // dovar
 break;
 case 62: // max
 {
-	if (top < stack[(char)S]) pop;
-	else (char)S--;
+	if (top < N) pop;
+	else S--;
 }
 break;
 case 63: // min
 {
-	if (top < stack[(char)S]) (char) S--;
+	if (top < N) S--;
 	else pop;
 }
 break;
@@ -481,7 +490,7 @@ default:
 #if 0
 void great(void)
 {
-	top = (stack[(char)S--] > top) LOGICAL;
+	top = (stack[PTR(S--)] > top) LOGICAL;
 }
 #endif
 
@@ -510,8 +519,8 @@ void HEADER(int lex, const char seq[]) {
 	while (P & 3) { cData[P++] = 0; }
 	putc('\n');
 	puts(seq);
-        putc(' ');
-        puti(P, 16);
+    putc(' ');
+    puti(P, 16);
 }
 int CODE(int len, ...) {
 	int addr = P;
@@ -780,12 +789,12 @@ void ABORQ(const char seq[]) {
 void CheckSum() {
 	int i;
 	char sum = 0;
-        nl(); putx(P, 4); putc(' ');
+    nl(); putx(P, 4); putc(' ');
 	for (i = 0; i < 16; i++) {
 		sum += cData[P];
 		putx(cData[P++], 2);
 	}
-        putc(' '); putx(sum & 0XFF, 2);
+    putc(' '); putx(sum & 0XFF, 2);
 }
 
 // Byte Code Assembler
@@ -878,6 +887,7 @@ int notmain(void)
 #ifdef BOOT
 	P = 512;
 	R = 0;
+    thread = 0;
 
 	// Kernel
 
@@ -1439,26 +1449,28 @@ int notmain(void)
 
 	// Boot Up
 
-        puts("\n\nIZ=");
-        puti(P, 16);
-        puts(" R-stack=");
-        puti(popR << 2, 16);
+    puts("\n\nIZ=");
+    puti(P, 16);
+    puts(" R-stack=");
+    puti(popR << 2, 16);
 
-        IZ = P;
+    IZ = P;
 
 	P = 0;
 	int RESET = LABEL(2, 6, COLD);
 	P = 0x90;
 	int USER = LABEL(8, 0X100, 0x10, IMMED - 12, ENDD, IMMED - 12, INTER, QUITT, 0);
 	// dump dictionary
-	// P = 0;
-	// for (; P < IZ; ) { CheckSum(); }
+	P = 0;
+	for (; P < IZ; ) { CheckSum(); }
 #endif
 
 	puts("\nceForth v3.3, 01jul19cht\n");
-        vfm(0);
+    vfm(0);
 
-        return 0;
+    return 0;
 }
 /* End of ceforth_33.cpp */
+
+/* vim:set ts=4 sw=4 et: */
 

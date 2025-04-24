@@ -1,6 +1,21 @@
 #ifndef _NOLIB_H
 #define _NOLIB_H
 
+#if defined(BOOT) || defined(__APPLE__)
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+#define  putc  putchar
+#define  getc  getchar
+
+void puti(int n, int base);
+void putd(int n);
+void putx(int n, int digits);
+void nl(void);
+#else
+
 typedef int int32_t;
 typedef long long int64_t;
 typedef unsigned int uint32_t;
@@ -26,5 +41,7 @@ void   exit(int);
 
 void hexstring ( uint32_t d );
 uint32_t prand32 ( uint32_t x );
+
+#endif
 
 #endif

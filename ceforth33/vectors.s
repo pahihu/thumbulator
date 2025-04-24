@@ -25,7 +25,9 @@
 .word   hang        /* 19 ...   */
 
 
+.text
 .thumb_func
+    .align
 hang:   b .
 
 .thumb_func
@@ -35,15 +37,19 @@ hang:   b .
 .extern _data_rom_start
 .extern _bss_start
 .extern _bss_size
+    .align
 _start:
     ldr r0,=_data_start
     ldr r1,=_data_load_start
     ldr r2,=_data_size
     bl memcpy
-    ldr r0,=_bss_start
-    ldr r1,=0
-    ldr r2,=_bss_size
+    ;
+    ldr  r0,=_bss_start
+    ; ldr  r1,=0x40001f30
+    movs r1,#0
+    ldr  r2,=_bss_size
     bl memset
+    ;
     bl notmain
     swi 1
     @ldr r0,=0xF0000000 ;@ halt
