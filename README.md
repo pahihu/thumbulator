@@ -1,6 +1,9 @@
 This is a hybrid of the [original](https://github.com/dwelch67/thumbulator) and a [modified](https://github.com/ekoeppen/thumbulator) Thumbulator.
 The goal is to run ceForth 3.3 on it. Work in progress.
 
+Changes:
+* decodes DMB, DSB, ISB, NOP, SEV, UDF, WFE, WFI, YIELD
+
 pahihu
 
 

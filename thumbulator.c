@@ -78,6 +78,10 @@ unsigned int cpsr;
 unsigned int handler_mode;
 unsigned int reg_norm[16]; //normal execution mode, do not have a thread mode
 
+unsigned int reg_event; //event register
+typedef enum {NormalMode=0,WaitForEvt,WaitForInt} WaitType;
+WaitType waiting; //wait for
+
 unsigned int cpuid;
 unsigned int entry = 0;
 char *output_file_name;
@@ -1552,6 +1556,39 @@ if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
         goto Return;
     }
 
+    //111100111011....
+    if((inst&0xFFF0)==0xF3B0)
+    {
+        inst=fetch16(pc-2);
+        // ??? pc+=2;
+        // ??? write_register(15,pc);
+        
+        //DMB
+        //10.0....0101....
+        if((inst&0xD0F0)==0x8050)
+        {
+            rb=(inst>>0)&0xF;
+if(DISS) fprintf(stderr,"dmb   %u",rb);
+            goto Return;
+        }
+        //DSB
+        //10.0....0100....
+        if((inst&0xD0F0)==0x8040)
+        {
+            rb=(inst>>0)&0xF;
+if(DISS) fprintf(stderr,"dmb   %u",rb);
+            goto Return;
+        }
+        //ISB
+        //10.0....0110....
+        if((inst&0xD0F0)==0x8060)
+        {
+            rb=(inst>>0)&0xF;
+if(DISS) fprintf(stderr,"isb   %u",rb);
+            goto Return;
+        }
+    }
+
     //EOR
     if((inst&0xFFC0)==0x4040)
     {
@@ -2484,6 +2521,14 @@ if(DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
         goto Return;
     }
 
+    //UDF
+    if((inst&0xFF00)==0x7E00)
+    {
+        rb=(inst>>0)&0xFF;
+if(DISS) fprintf(stderr,"udf   #%u",rb);
+        goto Return;
+    }
+
     //UXTB
     if((inst&0xFFC0)==0xB2C0)
     {
@@ -2508,6 +2553,48 @@ if(DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
         goto Return;
     }
 
+    //HINT
+    if((inst&0xFF00)==0xBF00)
+    {
+        rd=(inst>>0)&0xF;
+        rm=(inst>>4)&0xF;
+        //NOP
+        if((rm==0x0)&&(rd=0x0))
+        {
+if(DISS) fprintf(stderr,"nop");
+            goto Return;
+        }
+        //YIELD
+        if((rm==0x1)&&(rd==0x0))
+        {
+if(DISS) fprintf(stderr,"yield");
+            goto Return;
+        }
+        //WFE
+        if((rm==0x2)&&(rd==0x0))
+        {
+            if(reg_event)reg_event=0;
+            else waiting=WaitForEvt;
+if(DISS) fprintf(stderr,"wfe");
+            goto Return;
+        }
+        //WFI
+        if((rm==0x3)&&(rd==0x0))
+        {
+            waiting=WaitForInt;
+if(DISS) fprintf(stderr,"wfi");
+            goto Return;
+        }
+        //SEV
+        if((rm==0x4)&&(rd==0x0))
+        {
+            reg_event=1;
+            if(WaitForEvt==waiting)waiting=0;
+if(DISS) fprintf(stderr,"sev");
+            goto Return;
+        }
+    }
+
     fprintf(stderr,"invalid instruction 0x%08X 0x%04X\n",pc-4,inst);
     return(1);
 
@@ -2526,6 +2613,8 @@ int reset ( void )
     systick_calibrate=0x00ABCDEF;
     handler_mode=0;
     cpsr=0;
+    reg_event=0;
+    waiting=0;
 
     reg_norm[13]=fetch32(entry); //cortex-m
     reg_norm[14]=0xFFFFFFFF;
@@ -2557,14 +2646,21 @@ int run ( void )
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
         if (0 == (instructions & 0x1f)) {
+            c = 0;
             if (frame_buffer && fb_qevent()) {
-                fb_event();
+                c = fb_event();
             } else {
                 while (read(read_fd, &c, 1) == 1)
-                    input_char(c, EvtKey, -1, -1);
+                    c = input_char(c, EvtKey, -1, -1);
+            }
+            if(c){
+                if(WaitForInt==waiting)waiting=0;
             }
         }
-        if(execute()) break;
+        if(WaitForInt!=waiting)
+        {
+            if(execute()) break;
+        }
     }
     dump_counters();
     return(0);
