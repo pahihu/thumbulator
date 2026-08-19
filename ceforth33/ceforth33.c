@@ -91,7 +91,7 @@ R = 0;
 top = 0;
 while (TRUE) {
 bytecode = (unsigned char)cData[P++];
-// puti(P-1,16); putc(' '); putd(bytecode); nl();
+puti(P-1,16); putc(' '); putd(bytecode); nl();
 switch(bytecode) {
 case 0: // nop
 {

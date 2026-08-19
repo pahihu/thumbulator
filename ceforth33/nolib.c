@@ -28,8 +28,16 @@ int getc(void)
 {
     int c;
 
+#if 1
+    while (!(c = uart_qrx()));
+    c = uart_rx();
+    if (13 == c) c = 10;
+    return c;
+#else
     c = uart_qrx();
     return c ? uart_rx() : c;
+#endif
+
 }
 //------------------------------------------------------------------------
 size_t strlen(const char *s)
@@ -132,7 +140,7 @@ uint32_t prand32 ( uint32_t x )
 //------------------------------------------------------------------------
 void nl(void)
 {
-    puts("\n");
+    putc(13); putc(10);
 }
 //------------------------------------------------------------------------
 void puti(int n, int base)

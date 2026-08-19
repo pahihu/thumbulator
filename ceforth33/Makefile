@@ -4,7 +4,7 @@ ARMGNU ?= arm-none-eabi
 # COPS = -Wall -mthumb -O2 -fomit-frame-pointer -nostdlib -nostartfiles -ffreestanding
 CC = $(ARMGNU)-gcc
 OPT = -O0
-CFLAGS =  -Wall -mthumb -march=armv6-m $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
+CFLAGS =  -Wall -mcpu=cortex-m0 $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
 
 all : ceforth33.bin
 
@@ -37,7 +37,7 @@ ceforth33.bin : dict32le.h $(OBJ) memmap
 
 run: ceforth33.bin
 	$(RM) run.log
-	../thumbulator -s -m ceforth33.sym ceforth33.bin 2>run.log
+	../thumbulator -m ceforth33.sym ceforth33.bin >run.log 2>&1
 
 clean:
 	$(RM) *.bin *.o *.elf *.list *.map *.sym

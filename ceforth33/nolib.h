@@ -10,6 +10,7 @@
 #define  putc  putchar
 #define  getc  getchar
 
+int  puts(const char *s);
 void puti(int n, int base);
 void putd(int n);
 void putx(int n, int digits);
