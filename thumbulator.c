@@ -88,7 +88,7 @@ char *output_file_name;
 
 #define THOR_MAXINPUT   (64 * 1024)
 
-int read_fd, write_fd;
+int read_fd, write_fd, error_fd;
 unsigned char input_buffer[THOR_MAXINPUT];
 typedef enum {EvtKey, EvtButton} EvtType;
 struct {
@@ -425,9 +425,13 @@ if(DBUG) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data);
             switch(addr)
             {
                 case PERIPH_START + 0:
-if(DISS) fprintf(stderr,"uart: [");
+if(DISS)
+{
+                    fprintf(stderr,"uart: [");
+                    write(error_fd, &data, 1);
+                    fprintf(stderr,"]\n");
+}
                     write(write_fd, &data, 1);
-if(DISS) fprintf(stderr,"]\n");
                     fflush(stdout);
                     break;
 
@@ -2839,6 +2843,7 @@ int main ( int argc, char *argv[] )
     cpuid = 0;
     read_fd = STDIN_FILENO;
     write_fd = STDOUT_FILENO;
+    error_fd = STDERR_FILENO;
     memset(rom,0xFF,sizeof(rom));
     memset(ram,0x00,sizeof(ram));
     frame_buffer = NULL;

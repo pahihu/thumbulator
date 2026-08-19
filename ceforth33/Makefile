@@ -3,7 +3,7 @@ ARMGNU ?= arm-none-eabi
 
 # COPS = -Wall -mthumb -O2 -fomit-frame-pointer -nostdlib -nostartfiles -ffreestanding
 CC = $(ARMGNU)-gcc
-OPT = -O2
+OPT = -O0
 CFLAGS =  -Wall -mthumb -march=armv6-m $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
 
 all : ceforth33.bin
