@@ -1,21 +1,22 @@
 RM = rm -f
 ARMGNU ?= arm-none-eabi
 
-# COPS = -Wall -mthumb -O2 -fomit-frame-pointer -nostdlib -nostartfiles -ffreestanding
 CC = $(ARMGNU)-gcc
-OPT = -O0
-CFLAGS =  -Wall -mcpu=cortex-m0 $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
+OPT = -O1
+CPU = -mcpu=cortex-m0
+# CPU = -mthumb
+CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
 
-all : ceforth33.bin
+all : ceforth ceforth33.bin
 
 SRC = ceforth33.c nolib.c
 OBJ = vectors.o $(SRC:.c=.o)
 
-ceforth.boot : ceforth33.c bootlib.c
+ceforth.boot : ceforth33.c bootlib.c nolib.h
 	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
 
 ceforth : dict32le.h ceforth33.c bootlib.c
-	cc -Wall -DHOSTED=1 -o $@ ceforth33.c bootlib.c
+	cc -Wall -DHOSTED=1 -O1 -o $@ ceforth33.c bootlib.c
 
 run.hosted: ceforth
 	$(RM) run.hosted.log
