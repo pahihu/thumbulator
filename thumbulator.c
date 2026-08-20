@@ -14,6 +14,9 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#ifndef HAVE_X11
+#define HAVE_X11	0
+#endif
 
 unsigned int read32 ( unsigned int );
 
@@ -108,10 +111,12 @@ unsigned long systick_ints;
 unsigned int symaddr[4096];
 char *symbols[4096];
 
+#if HAVE_X11
 Display *xDisplay;
 Window xWin;
 XImage *xImg;
 int xScreenNum, imgWidth, imgHeight;
+#endif
 //-------------------------------------------------------------------
 int input_char(int c, EvtType typ, int X, int Y)
 {
@@ -125,6 +130,7 @@ int input_char(int c, EvtType typ, int X, int Y)
 //-------------------------------------------------------------------
 void fb_open(int width, int height, char *data)
 {
+#if HAVE_X11
     imgWidth = width; imgHeight = height;
 
 	xDisplay = XOpenDisplay(NULL);
@@ -142,15 +148,19 @@ void fb_open(int width, int height, char *data)
 	xWin = XCreateSimpleWindow(xDisplay,root,50,50,imgWidth,imgHeight,1,0,0);
 	XSelectInput(xDisplay,xWin,ExposureMask|StructureNotifyMask|KeyPressMask|ButtonPressMask);
 	XMapWindow(xDisplay,xWin);
+#endif
 }
 //-------------------------------------------------------------------
 void fb_flush()
 {
+#if HAVE_X11
     XFlush(xDisplay);
+#endif
 }
 //-------------------------------------------------------------------
 int fb_qevent()
 {
+#if HAVE_X11
     XEvent event;
 
     fb_flush();
@@ -164,11 +174,13 @@ int fb_qevent()
             return 1;
         }
     }
+#endif
     return 0;
 }
 //-------------------------------------------------------------------
 int fb_event()
 {
+#if HAVE_X11
 	XEvent event;
 
     fb_flush();
@@ -194,13 +206,16 @@ int fb_event()
             return input_char(128 + event.xbutton.button, EvtButton, event.xkey.x, event.xkey.y);
         }
     }
+#endif
     return 0;
 }
 //-------------------------------------------------------------------
 void fb_close()
 {
+#if HAVE_X11
     XDestroyWindow(xDisplay, xWin);
     XCloseDisplay(xDisplay);
+#endif
 }
 //-------------------------------------------------------------------
 void init_syms()
@@ -432,7 +447,6 @@ if(DISS)
                     fprintf(stderr,"]\n");
 }
                     write(write_fd, &data, 1);
-                    fflush(stdout);
                     break;
 
                 case 0xE2F00000: /* frame buffer port */
@@ -2736,7 +2750,13 @@ void stop_server(void)
 	close(socket_fd);
 }
 //-------------------------------------------------------------------
-const char options[] = "c:d:e:g:h:m:o:p:rsv?";
+const char options[] =
+#if HAVE_X11
+	"c:d:e:g:h:m:o:p:rsv?"
+#else
+	"c:d:e:h:m:o:p:rsv?"
+#endif
+;
 //-------------------------------------------------------------------
 static void usage()
 {
@@ -2745,7 +2765,9 @@ static void usage()
     fprintf(stderr, "    -c <cpuid>         set CPUID\n");
     fprintf(stderr, "    -d <dump.out>      set dump output file name\n");
     fprintf(stderr, "    -e <entry>         set entry address\n");
+#if HAVE_X11
     fprintf(stderr, "    -g WxH             init gfx framebuffer\n");
+#endif
     fprintf(stderr, "    -h <disk.img>      set next disk image\n");
     fprintf(stderr, "    -m <symbol.map>    load symbols (fmt: sym addr)\n");
     fprintf(stderr, "    -o <org>           set load address\n");
@@ -2788,6 +2810,7 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'c': cpuid = htoi(optarg); break;
 		case 'd': output_file_name = optarg; break;
 		case 'e': entry = htoi(optarg); break;
+#if HAVE_X11
         case 'g':
             strcpy(tmp, optarg);
             p = strchr(tmp, 'x');
@@ -2808,6 +2831,7 @@ void handle_cmd_line(int argc, char *argv[])
                 exit(1);
             }
             break;
+#endif
         case 'h':
             if (disk_count == MAX_DISK) {
                 fprintf(stderr, "Not enough disk slots (max. %d)!", MAX_DISK);
