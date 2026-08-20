@@ -2,6 +2,7 @@ This is a hybrid of the [original](https://github.com/dwelch67/thumbulator) and 
 The goal is to run ceForth 3.3 on it. Work in progress.
 
 Changes:
+* ceForth V3.3 runs compiled in no opt. mode (-O0)
 * decodes DMB, DSB, ISB, NOP, SEV, UDF, WFE, WFI, YIELD
 
 pahihu
