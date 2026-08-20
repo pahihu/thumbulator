@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <getopt.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -32,6 +33,7 @@ static int DBUGRAMW  = 0;
 static int DBUGREG   = 0;
 static int DBUG      = 0;
 static int DBUGUART  = 0;
+static int DBUGSTACK = 0;
 static int DISS      = 0;
 static int DISR      = 0;
 
@@ -64,7 +66,7 @@ unsigned int systick_calibrate;
 void handle_disk(unsigned int wr);
 
 #define MAX_DISK    4
-int disk_count;
+unsigned int disk_count;
 int disk_fd[MAX_DISK];
 off_t disk_size[MAX_DISK];
 unsigned int disk_status;
@@ -82,22 +84,23 @@ unsigned int handler_mode;
 unsigned int reg_norm[16]; //normal execution mode, do not have a thread mode
 
 unsigned int reg_event; //event register
-typedef enum {NormalMode=0,WaitForEvt,WaitForInt} WaitType;
+typedef enum {NoWait=0,WaitForEvt,WaitForInt} WaitType;
 WaitType waiting; //wait for
 
 unsigned int cpuid;
 unsigned int entry = 0;
-char *output_file_name;
+const char *output_file_name;
 
 #define THOR_MAXINPUT   (64 * 1024)
 
 int read_fd, write_fd, error_fd;
 unsigned char input_buffer[THOR_MAXINPUT];
 typedef enum {EvtKey, EvtButton} EvtType;
-struct {
+typedef struct {
     EvtType typ;
     int X, Y;
-} input_event[THOR_MAXINPUT];
+} INPUT_EVENT;
+INPUT_EVENT input_event[THOR_MAXINPUT];
 size_t input_read_ptr = 0, input_write_ptr = 0;
 int socket_fd = -1;
 
@@ -258,7 +261,7 @@ char *get_sym(unsigned int addr)
     return NULL;
 }
 //-------------------------------------------------------------------
-void load_syms(char *name)
+void load_syms(const char *name)
 {
     FILE *fin;
     char buf[1024], *p, where[32], sym[128];
@@ -295,9 +298,9 @@ void load_syms(char *name)
 //-------------------------------------------------------------------
 void dump_registers(void) {
     int i;
-    static char *flags="NZCVQ000000000000000000000000000";
+    static const char *flags="NZCVQ000000000000000000000000000";
     unsigned int mask;
-    char *p;
+    const char *p;
 
     fprintf(stderr, "\nRegisters:\n");
     fprintf(stderr, "cpsr: ");
@@ -2085,7 +2088,7 @@ if(DISS)
             rc=read32(sp);
             if((rc&1)==0)
             {
-                fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
+                if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
                 //exit(1);
                 rc&=~1;
             }
@@ -2149,7 +2152,7 @@ if(DISS)
 
             if((rc&1)==0)
             {
-                fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
+                if(DBUGSTACK)fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
 //                exit(1);
             }
 
@@ -2607,7 +2610,7 @@ if(DISS) fprintf(stderr,"wfi");
         if((rm==0x4)&&(rd==0x0))
         {
             reg_event=1;
-            if(WaitForEvt==waiting)waiting=0;
+            if(WaitForEvt==waiting)waiting=NoWait;
 if(DISS) fprintf(stderr,"sev");
             goto Return;
         }
@@ -2632,7 +2635,7 @@ int reset ( void )
     handler_mode=0;
     cpsr=0;
     reg_event=0;
-    waiting=0;
+    waiting=NoWait;
 
     reg_norm[13]=fetch32(entry); //cortex-m
     reg_norm[14]=0xFFFFFFFF;
@@ -2672,7 +2675,7 @@ int run ( void )
                     c = input_char(c, EvtKey, -1, -1);
             }
             if(c){
-                if(WaitForInt==waiting)waiting=0;
+                if(WaitForInt==waiting)waiting=NoWait;
             }
         }
         if(WaitForInt!=waiting)
@@ -2684,7 +2687,7 @@ int run ( void )
     return(0);
 }
 //-------------------------------------------------------------------
-unsigned int load_binary(unsigned int addr, char *name)
+unsigned int load_binary(unsigned int addr, const char *name)
 {
 	int f;
 	int r;
@@ -2703,14 +2706,15 @@ unsigned int load_binary(unsigned int addr, char *name)
 	return (r + 1) & ~0x1;
 }
 //-------------------------------------------------------------------
-unsigned int htoi(char *h)
+unsigned int htoi(const char *h)
 {
 	unsigned int r = 0;
+    char c;
 
 	while (*h) {
 		r <<= 4;
-		*h = toupper(*h);
-		r += *h - (*h > '9' ? 55 : 48);
+		c = toupper(*h);
+		r += c - (c > '9' ? 55 : 48);
 		h++;
 	}
 	return r;
@@ -2782,7 +2786,8 @@ static void usage()
 void handle_cmd_line(int argc, char *argv[])
 {
 	int i, c, fd;
-    char *p, *opt, *optarg, tmp[128];
+    const char *p, *opt, *optarg;
+    char tmp[128];
 	unsigned int org = 0;
     off_t off;
     int mem_size;
@@ -2790,7 +2795,7 @@ void handle_cmd_line(int argc, char *argv[])
     if (1 == argc)
         usage();
 
-    for (int i = 1; i < argc; i++) {
+    for (i = 1; i < argc; i++) {
         opt    = argv[i];
         optarg = i+1 < argc ? argv[i+1] : NULL;
         if (opt[0] != '-') {
