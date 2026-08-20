@@ -12,10 +12,14 @@ SRC = ceforth33.c nolib.c
 OBJ = vectors.o $(SRC:.c=.o)
 
 ceforth.boot : ceforth33.c bootlib.c
-	cc -o $@ -DBOOT=1 ceforth33.c bootlib.c
+	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
 
 ceforth : dict32le.h ceforth33.c bootlib.c
-	cc -DHOSTED=1 -o $@ ceforth33.c bootlib.c
+	cc -Wall -DHOSTED=1 -o $@ ceforth33.c bootlib.c
+
+run.hosted: ceforth
+	$(RM) run.hosted.log
+	./ceforth 2>&1 | tee run.hosted.log
 
 dict32le.h: ceforth.boot
 	echo bye | ./ceforth.boot > boot.out
@@ -37,7 +41,7 @@ ceforth33.bin : dict32le.h $(OBJ) memmap
 
 run: ceforth33.bin
 	$(RM) run.log
-	../thumbulator -m ceforth33.sym ceforth33.bin >run.log 2>&1
+	../thumbulator -m ceforth33.sym ceforth33.bin 2>&1 | tee run.log
 
 clean:
 	$(RM) *.bin *.o *.elf *.list *.map *.sym

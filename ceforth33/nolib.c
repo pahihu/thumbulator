@@ -31,7 +31,6 @@ int getc(void)
 #if 1
     while (!(c = uart_qrx()));
     c = uart_rx();
-    if (13 == c) c = 10;
     return c;
 #else
     c = uart_qrx();
@@ -140,7 +139,7 @@ uint32_t prand32 ( uint32_t x )
 //------------------------------------------------------------------------
 void nl(void)
 {
-    putc(13); putc(10);
+    putc(10);
 }
 //------------------------------------------------------------------------
 void puti(int n, int base)
@@ -171,6 +170,7 @@ void putx(int n, int ndigits)
 //------------------------------------------------------------------------
 void exit(int status)
 {
+    puts("HALTED");
     // asm("swi 1");
     asm("b .");
 }

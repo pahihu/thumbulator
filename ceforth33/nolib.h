@@ -1,7 +1,7 @@
 #ifndef _NOLIB_H
 #define _NOLIB_H
 
-#if defined(BOOT) || defined(__APPLE__)
+#if defined(BOOT) || defined(HOSTED)
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

@@ -50,8 +50,8 @@ int32_t *data;
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-int  R = 0;
-int  S = 0;
+int32_t  R = 0;
+int32_t  S = 0;
 int32_t P, IP, thread, len;
 int32_t IZ;
 
@@ -72,13 +72,13 @@ unsigned char cData[IMAGE_SIZE] = {
 #define _DROP    pop
 #define _OVER    push stack[PTR(S - 1)];
 
-void vfm(int32_t p)
+int vfm(int32_t p)
 {
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-int R;
-int S;
+int32_t R;
+int32_t S;
 int32_t top;
 int32_t  P, IP, WP;
 unsigned char bytecode;
@@ -91,7 +91,7 @@ R = 0;
 top = 0;
 while (TRUE) {
 bytecode = (unsigned char)cData[P++];
-puti(P-1,16); putc(' '); putd(bytecode); nl();
+//puti(P-1,16); putc(' '); putd(bytecode); nl();
 switch(bytecode) {
 case 0: // nop
 {
@@ -100,7 +100,7 @@ Nop:    DONEXT;
 break;
 case 1: // bye
 {
-	exit(0);
+	return(0);
 }
 break;
 case 2: // qrx
@@ -482,7 +482,7 @@ break;
 default:
         puti(P-1, 16); putc(' '); puti(bytecode, 16);
         puts(" invalid bytecode"); nl();
-        exit(1);
+        return(1);
 } // switch
 } // while
 } // VFM
@@ -1466,9 +1466,7 @@ int notmain(void)
 #endif
 
 	puts("\nceForth v3.3, 01jul19cht\n");
-    vfm(0);
-
-    return 0;
+    return vfm(0);
 }
 /* End of ceforth_33.cpp */
 
