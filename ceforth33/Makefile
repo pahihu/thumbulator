@@ -16,7 +16,7 @@ ceforth.boot : ceforth33.c bootlib.c nolib.h
 	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
 
 ceforth : dict32le.h ceforth33.c bootlib.c
-	cc -Wall -DHOSTED=1 -O1 -o $@ ceforth33.c bootlib.c
+	cc -Wall -DHOSTED=1 -o $@ ceforth33.c bootlib.c
 
 run.hosted: ceforth
 	$(RM) run.hosted.log
