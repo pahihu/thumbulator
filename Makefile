@@ -5,8 +5,8 @@ LDFLAGS = -L /opt/X11/lib -lX11
 # macOS: LDSTRIP=-Wl,-dead_strip
 # Linux: LDSTRIP=-Wl,--gc-sections
 LDSTRIP=
-# STRIP=strip
-STRIP=:
+STRIP=strip
+# STRIP=:
 
 thumbulator : thumbulator.o
 	$(CC) -ffunction-sections -fdata-sections $(LDSTRIP) -o thumbulator $(CFLAGS) thumbulator.o $(LDFLAGS)

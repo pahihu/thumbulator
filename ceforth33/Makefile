@@ -2,13 +2,16 @@ RM = rm -f
 ARMGNU ?= arm-none-eabi
 
 CC = $(ARMGNU)-gcc
-OPT = -Os -fomit-frame-pointer # 2876 bytes
+OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
 # OPT = -O1 -fomit-frame-pointer # 3544 bytes
 # OPT = -O2 -fomit-frame-pointer # 3356 bytes
 # OPT = -O3 -fomit-frame-pointer # 3836 bytes
-CPU = -mcpu=cortex-m0
-# CPU = -mthumb
-CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
+#
+# https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
+#
+CPU = -mcpu=cortex-m0 -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
+CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostdlib -nostartfiles
+LDFLAGS = -Wl,--gc-sections
 
 all : ceforth ceforth33.bin
 
