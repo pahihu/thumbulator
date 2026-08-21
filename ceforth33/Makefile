@@ -2,7 +2,10 @@ RM = rm -f
 ARMGNU ?= arm-none-eabi
 
 CC = $(ARMGNU)-gcc
-OPT = -O1
+OPT = -Os -fomit-frame-pointer # 2876 bytes
+# OPT = -O1 -fomit-frame-pointer # 3544 bytes
+# OPT = -O2 -fomit-frame-pointer # 3356 bytes
+# OPT = -O3 -fomit-frame-pointer # 3836 bytes
 CPU = -mcpu=cortex-m0
 # CPU = -mthumb
 CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -ffreestanding -nostdlib -nostartfiles
@@ -15,16 +18,18 @@ OBJ = vectors.o $(SRC:.c=.o)
 ceforth.boot : ceforth33.c bootlib.c nolib.h
 	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
 
-ceforth : dict32le.h ceforth33.c bootlib.c
+ceforth : dict32le.h ceforth33.c bootlib.c nolib.h
 	cc -Wall -DHOSTED=1 -o $@ ceforth33.c bootlib.c
 
 run.hosted: ceforth
 	$(RM) run.hosted.log
-	./ceforth 2>&1 | tee run.hosted.log
+	./ceforth 2>&1 | tee $@
 
-dict32le.h: ceforth.boot
+boot.out: ceforth.boot
 	echo bye | ./ceforth.boot > boot.out
-	awk -f hex2h.awk boot.out > dict32le.h
+
+dict32le.h: boot.out hex2h.awk
+	awk -f hex2h.awk boot.out > $@
 
 vectors.o : vectors.s
 	$(ARMGNU)-as vectors.s -o vectors.o
@@ -32,17 +37,20 @@ vectors.o : vectors.s
 ceforth33.s : ceforth33.c
 	$(ARMGNU)-gcc $(CFLAGS) -S -fverbose-asm ceforth33.c
 
-ceforth33.bin : dict32le.h $(OBJ) memmap
-	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T memmap -o ceforth33.elf -lgcc
-	$(ARMGNU)-objdump -D ceforth33.elf > ceforth33.list
-	$(ARMGNU)-objdump -t ceforth33.elf > ceforth33.map
+ceforth33.elf : dict32le.h $(OBJ) memmap
+	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T memmap -o $@ -lgcc
+	$(ARMGNU)-size $@
+
+ceforth33.bin : ceforth33.elf
+	$(ARMGNU)-objdump -D $< > ceforth33.list
+	$(ARMGNU)-objdump -t $< > ceforth33.map
 	awk -f symbols.awk ceforth33.map > ceforth33.sym
-	$(ARMGNU)-objcopy ceforth33.elf ceforth33.bin -O binary
-	ls -l ceforth33.bin
+	$(ARMGNU)-objcopy $< $@ -O binary
+	ls -l $@
 
 run: ceforth33.bin
 	$(RM) run.log
-	../thumbulator -m ceforth33.sym ceforth33.bin 2>&1 | tee run.log
+	../thumbulator -m ceforth33.sym $< 2>&1 | tee run.log
 
 clean:
 	$(RM) *.bin *.o *.elf *.list *.map *.sym

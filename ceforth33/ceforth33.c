@@ -30,16 +30,17 @@
 #include "nolib.h"
 #include <stdarg.h>
 
-# define    PTR(x)  ((uint8_t)(x))
+# define    PTR(x)  (x)
+# define    DATA(x) (*(int32_t*)(cData+(x)))
 # define	FALSE	0
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE
 # define 	LOWER(x,y) ((uint32_t)(x)<(uint32_t)(y))
-# define	pop	    top = stack[PTR(S--)]
-# define	push	stack[PTR(++S)] = top; top =
-# define	popR    rack[PTR(R--)]
-# define	pushR   rack[PTR(++R)]
-# define    N       stack[PTR(S)]
+# define	pop	    top = *S--
+# define	push	*++S = top; top =
+# define	popR    *R--
+# define	pushR   *++R
+# define    N       *S
 int32_t *data;
 
 #if defined(BOOT) || defined(HOSTED)
@@ -49,12 +50,14 @@ int32_t *data;
 #define IMAGE_SIZE
 #endif
 
+#define sptr_t  int32_t
+
 #if defined(BOOT)
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-uint8_t  R = 0;
-uint8_t  S = 0;
+int32_t *R = rack;
+int32_t *S = stack;
 int32_t P, IP, thread, len;
 int32_t IZ;
 
@@ -68,20 +71,20 @@ unsigned char cData[IMAGE_SIZE] = {
 // Virtual Forth Machine
 #define DONEXT \
 { \
-	P = data[IP >> 2]; \
+	P = DATA(IP); \
 	WP = P + 4; \
 	IP += 4; \
 }
 #define _DROP    pop
-#define _OVER    push stack[PTR(S - 1)];
+#define _OVER    push *(S - 1)
 
 int vfm(int32_t p)
 {
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-uint8_t R;
-uint8_t S;
+int32_t *R;
+int32_t *S;
 int32_t top;
 int32_t  P, IP, WP;
 unsigned char bytecode;
@@ -89,8 +92,8 @@ unsigned char bytecode;
 P = p;
 WP = 4;
 IP = 0;
-S = 0;
-R = 0;
+S = stack;
+R = rack;
 top = 0;
 while (TRUE) {
 bytecode = (unsigned char)cData[P++];
@@ -120,26 +123,26 @@ case 3: // txsto
 break;
 case 4: // docon
 {
-	push data[WP >> 2];
+	push DATA(WP);
 }
 break;
 case 5: // dolit
 {
-	push data[IP >> 2];
+	push DATA(IP);
 	IP += 4;
 	DONEXT;
 }
 break;
 case 6: // dolist
 {
-	rack[PTR(++R)] = IP;
+	*++R = IP;
 	IP = WP;
 	DONEXT;
 }
 break;
 case 7: // exitt
 {
-	IP = (int32_t)rack[PTR(R--)];
+	IP = (int32_t)(*R--);
 	DONEXT;
 }
 break;
@@ -152,9 +155,9 @@ case 8: // execu
 break;
 case 9: // donext
 {
-	if (rack[PTR(R)]) {
-		rack[PTR(R)] -= 1;
-		IP = data[IP >> 2];
+	if (*R) {
+		*R -= 1;
+		IP = DATA(IP);
 	}
 	else {
 		IP += 4;
@@ -165,7 +168,7 @@ case 9: // donext
 break;
 case 10: // qbran
 {
-	if (top == 0) IP = data[IP >> 2];
+	if (top == 0) IP = DATA(IP);
 	else IP += 4;
 	pop;
 	DONEXT;
@@ -173,24 +176,24 @@ case 10: // qbran
 break;
 case 11: // bran
 {
-	IP = data[IP >> 2];
+	IP = DATA(IP);
 	DONEXT;
 }
 break;
 case 12: // store
 {
-	data[top >> 2] = stack[PTR(S--)];
+	DATA(top) = *S--;
 	pop;
 }
 break;
 case 13: // at
 {
-	top = data[top >> 2];
+	top = DATA(top);
 }
 break;
 case 14: // cstor
 {
-	cData[top] = (char)stack[PTR(S--)];
+	cData[top] = (char)(*S--);
 	pop;
 }
 break;
@@ -205,17 +208,17 @@ case 17: // rpsto
         goto Nop;
 case 18: // rfrom
 {
-	push rack[PTR(R--)];
+	push *R--;
 }
 break;
 case 19: // rat
 {
-	push rack[PTR(R)];
+	push *R;
 }
 break;
 case 20: // tor
 {
-	rack[PTR(++R)] = top;
+	*++R = top;
 	pop;
 }
 break;
@@ -230,7 +233,7 @@ case 23: // drop
 break;
 case 24: // dup
 {
-	stack[PTR(++S)] = top;
+	*++S = top;
 }
 break;
 case 25: // swap
@@ -242,7 +245,7 @@ case 25: // swap
 break;
 case 26: // over
 {
-	push stack[PTR(S - 1)];
+	push *(S - 1);
 }
 break;
 case 27: // zless
@@ -252,17 +255,17 @@ case 27: // zless
 break;
 case 28: // andd
 {
-	top &= stack[PTR(S--)];
+	top &= *S--;
 }
 break;
 case 29: // orr
 {
-	top |= stack[PTR(S--)];
+	top |= *S--;
 }
 break;
 case 30: // xorr
 {
-	top ^= stack[PTR(S--)];
+	top ^= *S--;
 }
 break;
 case 31: // uplus
@@ -273,20 +276,20 @@ case 31: // uplus
 break;
 case 32: // next
 {
-	P = data[IP >> 2];
+	P = DATA(IP);
 	WP = P + 4;
 	IP += 4;
 }
 break;
 case 33: // qdup
 {
-	if (top) stack[PTR(++S)] = top;
+	if (top) *++S = top;
 }
 break;
 case 34: // rot
 {
-	WP = stack[PTR(S - 1)];
-	stack[PTR(S - 1)] = N;
+	WP = *(S - 1);
+	*(S - 1) = N;
 	N = top;
 	top = WP;
 }
@@ -303,7 +306,7 @@ case 36: // ddup
 break;
 case 37: // plus
 {
-	top += stack[PTR(S--)];
+	top += *S--;
 }
 break;
 case 38: // inver
@@ -326,7 +329,7 @@ case 40: // dnega
 break;
 case 41: // subb
 {
-	top = stack[PTR(S--)] - top;
+	top = *S-- - top;
 }
 break;
 case 42: // abss
@@ -337,7 +340,7 @@ case 42: // abss
 break;
 case 43: // equal
 {
-	top = (stack[PTR(S--)] == top) LOGICAL;
+	top = (*S-- == top) LOGICAL;
 }
 break;
 case 44: // uless
@@ -347,14 +350,14 @@ case 44: // uless
 break;
 case 45: // less
 {
-	top = (stack[PTR(S--)] < top) LOGICAL;
+	top = (*S-- < top) LOGICAL;
 }
 break;
 case 46: // ummod
 {
 	d = (int64_t)((uint32_t)top);
 	m = (int64_t)((uint32_t)N);
-	n = (int64_t)((uint32_t)stack[PTR(S - 1)]);
+	n = (int64_t)((uint32_t)(*(S - 1)));
 	n += m << 32;
 	pop;
 	top = (uint32_t)(n / d);
@@ -365,7 +368,7 @@ case 47: // msmod
 {
 	d = (int64_t)((int32_t)top);
 	m = (int64_t)((int32_t)N);
-	n = (int64_t)((int32_t)stack[PTR(S - 1)]);
+	n = (int64_t)((int32_t)(*(S - 1)));
 	n += m << 32;
 	pop;
 	top = (int32_t)(n / d);
@@ -383,12 +386,12 @@ case 48: // slmod
 break;
 case 49: // mod
 {
-	top = (top) ? stack[PTR(S--)] % top : stack[PTR(S--)];
+	top = (top) ? *S-- % top : *S--;
 }
 break;
 case 50: // slash
 {
-	top = (top) ? stack[PTR(S--)] / top : (stack[PTR(S--)], 0);
+	top = (top) ? *S-- / top : (*S--, 0);
 }
 break;
 case 51: // umsta
@@ -402,7 +405,7 @@ case 51: // umsta
 break;
 case 52: // star
 {
-	top *= stack[PTR(S--)];
+	top *= *S--;
 }
 break;
 case 53: // mstar
@@ -418,7 +421,7 @@ case 54: // ssmod
 {
 	d = (int64_t)top;
 	m = (int64_t)N;
-	n = (int64_t)stack[PTR(S - 1)];
+	n = (int64_t)(*(S - 1));
 	n *= m;
 	pop;
 	top = (int32_t)(n / d);
@@ -429,7 +432,7 @@ case 55: // stasl
 {
 	d = (int64_t)top;
 	m = (int64_t)N;
-	n = (int64_t)stack[PTR(S - 1)];
+	n = (int64_t)(*(S - 1));
 	n *= m;
 	pop; pop;
 	top = (int32_t)(n / d);
@@ -437,31 +440,31 @@ case 55: // stasl
 break;
 case 56: // pick
 {
-	top = stack[PTR(S - top)];
+	top = *(S - top);
 }
 break;
 case 57: // pstor
 {
-	data[top >> 2] += stack[PTR(S--)], pop;
+	DATA(top) += *S--, pop;
 }
 break;
 case 58: // dstor
 {
-	data[top >> 2] = stack[PTR(S--)];
-	data[(top >> 2) + 1] = stack[PTR(S--)];
+	DATA(top) = *S--;
+	DATA(top + 4) = *S--;
 	pop;
 }
 break;
 case 59: // dat
 {
-        WP = top >> 2;
-	top = data[WP + 1];
-	push data[WP];
+    WP = top;
+	top = DATA(WP + 4);
+	push DATA(WP);
 }
 break;
 case 60: // count
 {
-	stack[PTR(++S)] = top + 1;
+	*++S = top + 1;
 	top = cData[top];
 }
 break;
@@ -493,7 +496,7 @@ default:
 #if 0
 void great(void)
 {
-	top = (stack[PTR(S--)] > top) LOGICAL;
+	top = (*S-- > top) LOGICAL;
 }
 #endif
 
@@ -889,7 +892,7 @@ int notmain(void)
 	data = (int32_t*) cData;
 #ifdef BOOT
 	P = 512;
-	R = 0;
+	R = rack;
     thread = 0;
 
 	// Kernel

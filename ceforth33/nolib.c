@@ -1,9 +1,9 @@
 #include "nolib.h"
 
 #define THUL_UART_BASE 0xE0000000
-#define THUL_UART_TX  ((uint32_t*)(THUL_UART_BASE + 0x00))
-#define THUL_UART_RX  (( int32_t*)(THUL_UART_BASE + 0x04))
-#define THUL_UART_QRX (( int32_t*)(THUL_UART_BASE + 0x08))
+#define THUL_UART_TX  ((volatile uint32_t*)(THUL_UART_BASE + 0x00))
+#define THUL_UART_RX  ((volatile  int32_t*)(THUL_UART_BASE + 0x04))
+#define THUL_UART_QRX ((volatile  int32_t*)(THUL_UART_BASE + 0x08))
 //------------------------------------------------------------------------
 void uart_tx ( uint32_t c )
 {

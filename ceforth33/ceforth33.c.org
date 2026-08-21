@@ -4,7 +4,7 @@
 
 /* Andras Pahi                                                                */
 /* 20aug26ap                                                                  */
-/* Removed the complex pre/post-increment/decrement expressions.              */
+/* S and R is unsigned char                                                   */
 /* Chen-Hanson Ting                                                           */
 /* 01jul19cht   version 3.3                                                   */
 /* Macro assembler, Visual Studio 2019 Community                              */
@@ -30,15 +30,15 @@
 #include "nolib.h"
 #include <stdarg.h>
 
-# define    PTR(x)  (255&(x))
+# define    PTR(x)  ((uint8_t)(x))
 # define	FALSE	0
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE
 # define 	LOWER(x,y) ((uint32_t)(x)<(uint32_t)(y))
-# define	pop	    top = stack[PTR(S)]; S--
-# define	push	S++; stack[PTR(S)] = top; top =
-# define	popR    rack[PTR(R)]; R--
-# define	pushR   R++; rack[PTR(R)]
+# define	pop	    top = stack[PTR(S--)]
+# define	push	stack[PTR(++S)] = top; top =
+# define	popR    rack[PTR(R--)]
+# define	pushR   rack[PTR(++R)]
 # define    N       stack[PTR(S)]
 int32_t *data;
 
@@ -53,8 +53,8 @@ int32_t *data;
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-int32_t  R = 0;
-int32_t  S = 0;
+uint8_t  R = 0;
+uint8_t  S = 0;
 int32_t P, IP, thread, len;
 int32_t IZ;
 
@@ -80,8 +80,8 @@ int vfm(int32_t p)
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-int32_t R;
-int32_t S;
+uint8_t R;
+uint8_t S;
 int32_t top;
 int32_t  P, IP, WP;
 unsigned char bytecode;
@@ -132,14 +132,14 @@ case 5: // dolit
 break;
 case 6: // dolist
 {
-	pushR = IP;
+	rack[PTR(++R)] = IP;
 	IP = WP;
 	DONEXT;
 }
 break;
 case 7: // exitt
 {
-	IP = (int32_t)popR;
+	IP = (int32_t)rack[PTR(R--)];
 	DONEXT;
 }
 break;
@@ -179,7 +179,7 @@ case 11: // bran
 break;
 case 12: // store
 {
-	data[top >> 2] = stack[PTR(S)]; S--;
+	data[top >> 2] = stack[PTR(S--)];
 	pop;
 }
 break;
@@ -190,7 +190,7 @@ case 13: // at
 break;
 case 14: // cstor
 {
-	cData[top] = (char)stack[PTR(S)]; S--;
+	cData[top] = (char)stack[PTR(S--)];
 	pop;
 }
 break;
@@ -205,7 +205,7 @@ case 17: // rpsto
         goto Nop;
 case 18: // rfrom
 {
-	push rack[PTR(R)]; R--;
+	push rack[PTR(R--)];
 }
 break;
 case 19: // rat
@@ -215,7 +215,7 @@ case 19: // rat
 break;
 case 20: // tor
 {
-	pushR = top;
+	rack[PTR(++R)] = top;
 	pop;
 }
 break;
@@ -230,7 +230,7 @@ case 23: // drop
 break;
 case 24: // dup
 {
-	S++; stack[PTR(S)] = top;
+	stack[PTR(++S)] = top;
 }
 break;
 case 25: // swap
@@ -252,17 +252,17 @@ case 27: // zless
 break;
 case 28: // andd
 {
-	top &= stack[PTR(S)]; S--;
+	top &= stack[PTR(S--)];
 }
 break;
 case 29: // orr
 {
-	top |= stack[PTR(S)]; S--;
+	top |= stack[PTR(S--)];
 }
 break;
 case 30: // xorr
 {
-	top ^= stack[PTR(S)]; S--;
+	top ^= stack[PTR(S--)];
 }
 break;
 case 31: // uplus
@@ -280,7 +280,7 @@ case 32: // next
 break;
 case 33: // qdup
 {
-	if (top) { S++; stack[PTR(S)] = top; }
+	if (top) stack[PTR(++S)] = top;
 }
 break;
 case 34: // rot
@@ -303,7 +303,7 @@ case 36: // ddup
 break;
 case 37: // plus
 {
-	top += stack[PTR(S)]; S--;
+	top += stack[PTR(S--)];
 }
 break;
 case 38: // inver
@@ -326,7 +326,7 @@ case 40: // dnega
 break;
 case 41: // subb
 {
-	top = stack[PTR(S)] - top; S--;
+	top = stack[PTR(S--)] - top;
 }
 break;
 case 42: // abss
@@ -337,7 +337,7 @@ case 42: // abss
 break;
 case 43: // equal
 {
-	top = (stack[PTR(S)] == top) LOGICAL; S--;
+	top = (stack[PTR(S--)] == top) LOGICAL;
 }
 break;
 case 44: // uless
@@ -347,7 +347,7 @@ case 44: // uless
 break;
 case 45: // less
 {
-	top = (stack[PTR(S)] < top) LOGICAL; S--;
+	top = (stack[PTR(S--)] < top) LOGICAL;
 }
 break;
 case 46: // ummod
@@ -383,12 +383,12 @@ case 48: // slmod
 break;
 case 49: // mod
 {
-	top = (top) ? stack[PTR(S)] % top : stack[PTR(S)]; S--;
+	top = (top) ? stack[PTR(S--)] % top : stack[PTR(S--)];
 }
 break;
 case 50: // slash
 {
-	top = (top) ? stack[PTR(S)] / top : (stack[PTR(S)], 0); S--;
+	top = (top) ? stack[PTR(S--)] / top : (stack[PTR(S--)], 0);
 }
 break;
 case 51: // umsta
@@ -402,7 +402,7 @@ case 51: // umsta
 break;
 case 52: // star
 {
-	top *= stack[PTR(S)]; S--;
+	top *= stack[PTR(S--)];
 }
 break;
 case 53: // mstar
@@ -442,13 +442,13 @@ case 56: // pick
 break;
 case 57: // pstor
 {
-	data[top >> 2] += stack[PTR(S)], S--, pop;
+	data[top >> 2] += stack[PTR(S--)], pop;
 }
 break;
 case 58: // dstor
 {
-	data[top >> 2] = stack[PTR(S)]; S--;
-	data[(top >> 2) + 1] = stack[PTR(S)]; S--;
+	data[top >> 2] = stack[PTR(S--)];
+	data[(top >> 2) + 1] = stack[PTR(S--)];
 	pop;
 }
 break;
@@ -461,7 +461,7 @@ case 59: // dat
 break;
 case 60: // count
 {
-	S++; stack[PTR(S)] = top + 1;
+	stack[PTR(++S)] = top + 1;
 	top = cData[top];
 }
 break;
@@ -472,14 +472,14 @@ case 61: // dovar
 break;
 case 62: // max
 {
-	if (top < N) { pop; }
+	if (top < N) pop;
 	else S--;
 }
 break;
 case 63: // min
 {
 	if (top < N) S--;
-	else { pop; }
+	else pop;
 }
 break;
 default:
@@ -493,7 +493,7 @@ default:
 #if 0
 void great(void)
 {
-	top = (stack[PTR(S)] > top) LOGICAL; S--;
+	top = (stack[PTR(S--)] > top) LOGICAL;
 }
 #endif
 
@@ -583,12 +583,10 @@ void BEGIN(int len, ...) {
 	va_end(argList);
 }
 void AGAIN(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X AGAIN ",P);
 	data[IP++] = BRAN;
-    tmp = popR;
-	data[IP++] = tmp << 2;
+	data[IP++] = popR << 2;
 	va_list argList;
 	va_start(argList, len);
 	for (; len; len--) {
@@ -600,12 +598,10 @@ void AGAIN(int len, ...) {
 	va_end(argList);
 }
 void UNTIL(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X UNTIL ",P);
 	data[IP++] = QBRAN;
-    tmp = popR;
-	data[IP++] = tmp << 2;
+	data[IP++] = popR << 2;
 	va_list argList;
 	va_start(argList, len);
 	for (; len; len--) {
@@ -636,14 +632,11 @@ void WHILE(int len, ...) {
 	va_end(argList);
 }
 void REPEAT(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X REPEAT ",P);
 	data[IP++] = BRAN;
-    tmp = popR;
-	data[IP++] = tmp << 2;
-    tmp = popR;
-	data[tmp] = IP << 2;
+	data[IP++] = popR << 2;
+	data[popR] = IP << 2;
 	va_list argList;
 	va_start(argList, len);
 	for (; len; len--) {
@@ -671,13 +664,11 @@ void IF(int len, ...) {
 	va_end(argList);
 }
 void ELSE(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X ELSE ",P);
 	data[IP++] = BRAN;
 	data[IP++] = 0;
-    tmp = popR;
-	data[tmp] = IP << 2;
+	data[popR] = IP << 2;
 	pushR = IP - 1;
 	va_list argList;
 	va_start(argList, len);
@@ -690,11 +681,9 @@ void ELSE(int len, ...) {
 	va_end(argList);
 }
 void THEN(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X THEN ",P);
-	tmp = popR;
-	data[tmp] = IP << 2;
+	data[popR] = IP << 2;
 	va_list argList;
 	va_start(argList, len);
 	for (; len; len--) {
@@ -721,12 +710,10 @@ void FOR(int len, ...) {
 	va_end(argList);
 }
 void NEXT(int len, ...) {
-    int tmp;
 	IP = P >> 2;
 	//printf("\n%X NEXT ",P);
 	data[IP++] = DONXT;
-    tmp = popR;
-	data[IP++] = tmp << 2;
+	data[IP++] = popR << 2;
 	va_list argList;
 	va_start(argList, len);
 	for (; len; len--) {
@@ -1468,8 +1455,7 @@ int notmain(void)
     puts("\n\nIZ=");
     puti(P, 16);
     puts(" R-stack=");
-    int tmp = popR;
-    puti(tmp << 2, 16);
+    puti(popR << 2, 16);
 
     IZ = P;
 
