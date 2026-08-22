@@ -1,6 +1,6 @@
 
 /* vectors.s */
-.cpu cortex-m3
+.cpu cortex-m0
 .thumb
 
 .word   0x40080000  /* stack top address */
