@@ -9,9 +9,11 @@ OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
-CPU = --target=thumb -mfloat-abi=soft -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
+CPU = --target=arm-none-eabi -mcpu=cortex-m0 -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
 CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostdlib -nostartfiles
 LDFLAGS = -Wl,--gc-sections
+MAP = memmap.llvm
+LIBS = -lclang_rt.builtins -lc
 
 all : ceforth ceforth33.bin
 
@@ -35,13 +37,13 @@ dict32le.h: boot.out hex2h.awk
 	awk -f hex2h.awk boot.out > $@
 
 vectors.o : vectors.s
-	$(TCC) vectors.s -o vectors.o
+	$(TCC) $(CFLAGS) -c vectors.s -o vectors.o
 
-ceforth33.s : ceforth33.c
+ceforth33.s : dict32le.h ceforth33.c
 	$(TCC) $(CFLAGS) -S -fverbose-asm ceforth33.c
 
-ceforth33.elf : dict32le.h $(OBJ) memmap
-	$(TCC) $(CFLAGS) $(OBJ) -T memmap -o $@ -lgcc
+ceforth33.elf : dict32le.h $(OBJ) $(MAP)
+	$(TCC) $(CFLAGS) $(LDFLAGS) $(OBJ) -T $(MAP) -o $@ $(LIBS)
 	$(TARGET)-size $@
 
 ceforth33.bin : ceforth33.elf

@@ -12,6 +12,8 @@ OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
 CPU = -mcpu=cortex-m0 -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
 CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostdlib -nostartfiles
 LDFLAGS = -Wl,--gc-sections
+MAP = memmap.gnu
+LIBS = -lgcc
 
 all : ceforth ceforth33.bin
 
@@ -40,8 +42,8 @@ vectors.o : vectors.s
 ceforth33.s : ceforth33.c
 	$(ARMGNU)-gcc $(CFLAGS) -S -fverbose-asm ceforth33.c
 
-ceforth33.elf : dict32le.h $(OBJ) memmap
-	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T memmap -o $@ -lgcc
+ceforth33.elf : dict32le.h $(OBJ) $(MAP)
+	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T $(MAP) -o $@ $(LIBS)
 	$(ARMGNU)-size $@
 
 ceforth33.bin : ceforth33.elf
