@@ -55,6 +55,9 @@ run: ceforth33.bin
 	$(RM) run.log
 	../thumbulator -m ceforth33.sym $< 2>&1 | tee run.log
 
+fib: ceforth33.bin fib.f
+	cat fib.f | ../thumbulator ceforth33.bin
+
 clean:
 	$(RM) *.bin *.o *.elf *.list *.map *.sym
 	$(RM) ceforth.boot ceforth dict32le.h boot.out
