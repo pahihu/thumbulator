@@ -1,16 +1,17 @@
 RM = rm -f
 ARMGNU ?= arm-none-eabi
 
-CC = $(ARMGNU)-gcc
-OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
-# OPT = -O1 -fomit-frame-pointer # 3544 bytes
-# OPT = -O2 -fomit-frame-pointer # 3356 bytes
-# OPT = -O3 -fomit-frame-pointer # 3836 bytes
+CC = $(ARMGNU)-gcc -flto
+#								  bytes/FLTO		 Mclks/FLTO
+# OPT = -Os -fomit-frame-pointer # 2840/2840 bytes	233.30/233.30
+# OPT = -O1 -fomit-frame-pointer # 3488/3492 bytes	120.43/120.19
+# OPT = -O2 -fomit-frame-pointer # 3284/3396 bytes	119.17/119.17
+OPT = -O3 -fomit-frame-pointer # 3764/4036 bytes	119.12/101.17	2.108s @ 48MHz
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = -mcpu=cortex-m0
-OPT += -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
+OPT += -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
 CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostartfiles
 LDFLAGS = -Wl,--gc-sections
 MAP = memmap.gnu
