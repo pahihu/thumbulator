@@ -104,6 +104,7 @@ INPUT_EVENT input_event[THOR_MAXINPUT];
 size_t input_read_ptr = 0, input_write_ptr = 0;
 int socket_fd = -1;
 
+unsigned long clks;
 unsigned long instructions;
 unsigned long fetches;
 unsigned long reads;
@@ -327,6 +328,7 @@ void dump_registers(void) {
 void dump_counters ( void )
 {
     printf("\n\n");
+    printf("clocks       %lu\n",clks);
     printf("instructions %lu\n",instructions);
     printf("fetches      %lu\n",fetches);
     printf("reads        %lu\n",reads);
@@ -883,14 +885,14 @@ int execute ( void )
             handler_mode = 0;
 //fprintf(stderr,"--leaving handler\n");
             sp=read_register(13);
-            write_register(0,read32(sp)); sp+=4;
-            write_register(1,read32(sp)); sp+=4;
-            write_register(2,read32(sp)); sp+=4;
-            write_register(3,read32(sp)); sp+=4;
-            write_register(12,read32(sp)); sp+=4;
-            write_register(14,read32(sp)); sp+=4;
-            pc=read32(sp); sp+=4;
-            cpsr=read32(sp); sp+=4;
+            write_register(0,read32(sp)); sp+=4; clks += 2;
+            write_register(1,read32(sp)); sp+=4; clks += 2;
+            write_register(2,read32(sp)); sp+=4; clks += 2;
+            write_register(3,read32(sp)); sp+=4; clks += 2;
+            write_register(12,read32(sp)); sp+=4; clks += 2;
+            write_register(14,read32(sp)); sp+=4; clks += 2;
+            pc=read32(sp); sp+=4; clks += 2;
+            cpsr=read32(sp); sp+=4; clks += 2;
             write_register(13,sp);
         }
     }
@@ -918,14 +920,14 @@ int execute ( void )
                 systick_ints++;
 //fprintf(stderr,"--- enter systick handler\n");
                 sp=read_register(13);
-                sp-=4; write32(sp,cpsr);
-                sp-=4; write32(sp,pc);
-                sp-=4; write32(sp,read_register(14));
-                sp-=4; write32(sp,read_register(12));
-                sp-=4; write32(sp,read_register(3));
-                sp-=4; write32(sp,read_register(2));
-                sp-=4; write32(sp,read_register(1));
-                sp-=4; write32(sp,read_register(0));
+                sp-=4; write32(sp,cpsr); clks += 2;
+                sp-=4; write32(sp,pc); clks += 2;
+                sp-=4; write32(sp,read_register(14)); clks += 2;
+                sp-=4; write32(sp,read_register(12)); clks += 2;
+                sp-=4; write32(sp,read_register(3)); clks += 2;
+                sp-=4; write32(sp,read_register(2)); clks += 2;
+                sp-=4; write32(sp,read_register(1)); clks += 2;
+                sp-=4; write32(sp,read_register(0)); clks += 2;
                 write_register(13,sp);
                 pc=fetch32(0x0000003C); //systick vector
                 pc+=2;
@@ -940,7 +942,7 @@ int execute ( void )
 
 
 
-    inst=fetch16(pc-2);
+    inst=fetch16(pc-2); clks++;
     pc+=2;
     write_register(15,pc);
     if(DISS) {
@@ -1383,6 +1385,7 @@ if(DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
         rb=(inst>>0)&0xFF;
         // fprintf(stderr,"bkpt 0x%02X\n",rb);
         // return(1);
+        clks += 2;
         return(handle_bkpt(rb, read32(read_register(13))));
     }
 
@@ -1648,7 +1651,7 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write_register(ra,read32(sp));
+                write_register(ra,read32(sp)); clks += 2;
                 sp+=4;
             }
         }
@@ -1666,7 +1669,7 @@ if(DISS)
         rb<<=2;
 if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
-        rc=read32(rb);
+        rc=read32(rb); clks += 2;
         write_register(rd,rc);
         goto Return;
     }
@@ -1679,7 +1682,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read32(rb);
+        rc=read32(rb); clks += 2;
         write_register(rd,rc);
         goto Return;
     }
@@ -1695,7 +1698,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
         ra&=~3;
         rb+=ra;
 if(DISS) fprintf(stderr,";@ 0x%X",rb);
-        rc=read32(rb);
+        rc=read32(rb); clks += 2;
         write_register(rd,rc);
         goto Return;
     }
@@ -1710,7 +1713,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
         ra=read_register(13);
         //ra&=~3;
         rb+=ra;
-        rc=read32(rb);
+        rc=read32(rb); clks += 2;
         write_register(rd,rc);
         goto Return;
     }
@@ -1723,7 +1726,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
         rb=(inst>>6)&0x1F;
 if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
-        rc=read16(rb&(~1));
+        rc=read16(rb&(~1)); clks++;
         if(rb&1)
         {
             rc>>=8;
@@ -1743,7 +1746,7 @@ if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1));
+        rc=read16(rb&(~1)); clks++;
         if(rb&1)
         {
             rc>>=8;
@@ -1764,7 +1767,7 @@ if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
         rb<<=1;
 if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
-        rc=read16(rb);
+        rc=read16(rb); clks++;
         write_register(rd,rc&0xFFFF);
         goto Return;
     }
@@ -1777,7 +1780,7 @@ if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read16(rb);
+        rc=read16(rb); clks++;
         write_register(rd,rc&0xFFFF);
         goto Return;
     }
@@ -1790,7 +1793,7 @@ if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1));
+        rc=read16(rb&(~1)); clks++;
         if(rb&1)
         {
             rc>>=8;
@@ -1812,7 +1815,7 @@ if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read16(rb);
+        rc=read16(rb); clks++;
         rc&=0xFFFF;
         if(rc&0x8000) rc|=((MINUS_ONE)<<16);
         write_register(rd,rc);
@@ -2079,13 +2082,13 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write_register(ra,read32(sp));
+                write_register(ra,read32(sp)); clks += 2;
                 sp+=4;
             }
         }
         if(inst&0x100)
         {
-            rc=read32(sp);
+            rc=read32(sp); clks += 2;
             if((rc&1)==0)
             {
                 if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
@@ -2141,14 +2144,14 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write32(rd,read_register(ra));
+                write32(rd,read_register(ra)); clks += 2;
                 rd+=4;
             }
         }
         if(inst&0x100)
         {
             rc=read_register(14);
-            write32(rd,rc); //read_register(14));
+            write32(rd,rc); clks += 2; //read_register(14));
 
             if((rc&1)==0)
             {
@@ -2297,7 +2300,7 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write32(sp,read_register(ra));
+                write32(sp,read_register(ra)); clks += 2;
                 sp+=4;
             }
         }
@@ -2315,7 +2318,7 @@ if(DISS)
 if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
-        write32(rb,rc);
+        write32(rb,rc); clks += 2;
         goto Return;
     }
 
@@ -2328,7 +2331,7 @@ if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
 if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
-        write32(rb,rc);
+        write32(rb,rc); clks += 2;
         goto Return;
     }
 
@@ -2342,7 +2345,7 @@ if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
         rb=read_register(13)+rb;
 //fprintf(stderr,"0x%08X\n",rb);
         rc=read_register(rd);
-        write32(rb,rc);
+        write32(rb,rc); clks += 2;
         goto Return;
     }
 
@@ -2355,7 +2358,7 @@ if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
 if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
-        ra=read16(rb&(~1));
+        ra=read16(rb&(~1)); clks++;
         if(rb&1)
         {
             ra&=0x00FF;
@@ -2366,7 +2369,7 @@ if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
             ra&=0xFF00;
             ra|=rc&0x00FF;
         }
-        write16(rb&(~1),ra&0xFFFF);
+        write16(rb&(~1),ra&0xFFFF); clks++;
         goto Return;
     }
 
@@ -2379,7 +2382,7 @@ if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
 if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
-        ra=read16(rb&(~1));
+        ra=read16(rb&(~1)); clks++;
         if(rb&1)
         {
             ra&=0x00FF;
@@ -2390,7 +2393,7 @@ if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
             ra&=0xFF00;
             ra|=rc&0x00FF;
         }
-        write16(rb&(~1),ra&0xFFFF);
+        write16(rb&(~1),ra&0xFFFF); clks++;
         goto Return;
     }
 
@@ -2404,7 +2407,7 @@ if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
 if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
-        write16(rb,rc&0xFFFF);
+        write16(rb,rc&0xFFFF); clks++;
         goto Return;
     }
 
@@ -2417,7 +2420,7 @@ if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
 if(DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
-        write16(rb,rc&0xFFFF);
+        write16(rb,rc&0xFFFF); clks++;
         goto Return;
     }
 
@@ -2648,6 +2651,7 @@ int reset ( void )
     reg_norm[15]&=~1;
     reg_norm[15]+=2;
 
+    clks=0;
     instructions=0;
     fetches=0;
     reads=0;
