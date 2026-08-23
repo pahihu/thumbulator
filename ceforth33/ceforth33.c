@@ -3,6 +3,10 @@
 /******************************************************************************/
 
 /* Andras Pahi                                                                */
+/* 23aug26ap                                                                  */
+/* S and R grows downward instead of upward (6% faster on Cortex-M0)          */
+/* 21aug26ap                                                                  */
+/* S and R are pointers                                                       */
 /* 20aug26ap                                                                  */
 /* S and R is unsigned char                                                   */
 /* Chen-Hanson Ting                                                           */
@@ -36,10 +40,10 @@
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE
 # define 	LOWER(x,y) ((uint32_t)(x)<(uint32_t)(y))
-# define	pop	    top = *S--
-# define	push	*++S = top; top =
-# define	popR    *R--
-# define	pushR   *++R
+# define	pop	    top = *S++
+# define	push	*--S = top; top =
+# define	popR    *R++
+# define	pushR   *--R
 # define    N       *S
 int32_t *data;
 
@@ -56,8 +60,8 @@ int32_t *data;
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-int32_t *R = rack;
-int32_t *S = stack;
+int32_t *R = rack + 256;
+int32_t *S = stack + 256;
 int32_t P, IP, thread, len;
 int32_t IZ;
 
@@ -76,7 +80,7 @@ unsigned char cData[IMAGE_SIZE] = {
 	IP += 4; \
 }
 #define _DROP    pop
-#define _OVER    push *(S - 1)
+#define _OVER    push *(S + 1)
 
 int vfm(int32_t p)
 {
@@ -92,8 +96,8 @@ unsigned char bytecode;
 P = p;
 WP = 4;
 IP = 0;
-S = stack;
-R = rack;
+S = stack + 256;
+R = rack + 256;
 top = 0;
 while (TRUE) {
 bytecode = (unsigned char)cData[P++];
@@ -135,14 +139,14 @@ case 5: // dolit
 break;
 case 6: // dolist
 {
-	*++R = IP;
+	*--R = IP;
 	IP = WP;
 	DONEXT;
 }
 break;
 case 7: // exitt
 {
-	IP = (int32_t)(*R--);
+	IP = (int32_t)(*R++);
 	DONEXT;
 }
 break;
@@ -161,7 +165,7 @@ case 9: // donext
 	}
 	else {
 		IP += 4;
-		R--;
+		R++;
 	}
 	DONEXT;
 }
@@ -182,7 +186,7 @@ case 11: // bran
 break;
 case 12: // store
 {
-	DATA(top) = *S--;
+	DATA(top) = *S++;
 	pop;
 }
 break;
@@ -193,7 +197,7 @@ case 13: // at
 break;
 case 14: // cstor
 {
-	cData[top] = (char)(*S--);
+	cData[top] = (char)(*S++);
 	pop;
 }
 break;
@@ -208,7 +212,7 @@ case 17: // rpsto
         goto Nop;
 case 18: // rfrom
 {
-	push *R--;
+	push *R++;
 }
 break;
 case 19: // rat
@@ -218,7 +222,7 @@ case 19: // rat
 break;
 case 20: // tor
 {
-	*++R = top;
+	*--R = top;
 	pop;
 }
 break;
@@ -233,7 +237,7 @@ case 23: // drop
 break;
 case 24: // dup
 {
-	*++S = top;
+	*--S = top;
 }
 break;
 case 25: // swap
@@ -245,7 +249,7 @@ case 25: // swap
 break;
 case 26: // over
 {
-	push *(S - 1);
+	push *(S + 1);
 }
 break;
 case 27: // zless
@@ -255,17 +259,17 @@ case 27: // zless
 break;
 case 28: // andd
 {
-	top &= *S--;
+	top &= *S++;
 }
 break;
 case 29: // orr
 {
-	top |= *S--;
+	top |= *S++;
 }
 break;
 case 30: // xorr
 {
-	top ^= *S--;
+	top ^= *S++;
 }
 break;
 case 31: // uplus
@@ -283,13 +287,13 @@ case 32: // next
 break;
 case 33: // qdup
 {
-	if (top) *++S = top;
+	if (top) *--S = top;
 }
 break;
 case 34: // rot
 {
-	WP = *(S - 1);
-	*(S - 1) = N;
+	WP = *(S + 1);
+	*(S + 1) = N;
 	N = top;
 	top = WP;
 }
@@ -306,7 +310,7 @@ case 36: // ddup
 break;
 case 37: // plus
 {
-	top += *S--;
+	top += *S++;
 }
 break;
 case 38: // inver
@@ -329,7 +333,7 @@ case 40: // dnega
 break;
 case 41: // subb
 {
-	top = *S-- - top;
+	top = *S++ - top;
 }
 break;
 case 42: // abss
@@ -340,24 +344,24 @@ case 42: // abss
 break;
 case 43: // equal
 {
-	top = (*S-- == top) LOGICAL;
+	top = (*S++ == top) LOGICAL;
 }
 break;
 case 44: // uless
 {
-	top = LOWER(N, top) LOGICAL; S--;
+	top = LOWER(N, top) LOGICAL; S++;
 }
 break;
 case 45: // less
 {
-	top = (*S-- < top) LOGICAL;
+	top = (*S++ < top) LOGICAL;
 }
 break;
 case 46: // ummod
 {
 	d = (int64_t)((uint32_t)top);
 	m = (int64_t)((uint32_t)N);
-	n = (int64_t)((uint32_t)(*(S - 1)));
+	n = (int64_t)((uint32_t)(*(S + 1)));
 	n += m << 32;
 	pop;
 	top = (uint32_t)(n / d);
@@ -368,7 +372,7 @@ case 47: // msmod
 {
 	d = (int64_t)((int32_t)top);
 	m = (int64_t)((int32_t)N);
-	n = (int64_t)((int32_t)(*(S - 1)));
+	n = (int64_t)((int32_t)(*(S + 1)));
 	n += m << 32;
 	pop;
 	top = (int32_t)(n / d);
@@ -386,12 +390,12 @@ case 48: // slmod
 break;
 case 49: // mod
 {
-	top = (top) ? *S-- % top : *S--;
+	top = (top) ? *S++ % top : *S++;
 }
 break;
 case 50: // slash
 {
-	top = (top) ? *S-- / top : (*S--, 0);
+	top = (top) ? *S++ / top : (*S++, 0);
 }
 break;
 case 51: // umsta
@@ -405,7 +409,7 @@ case 51: // umsta
 break;
 case 52: // star
 {
-	top *= *S--;
+	top *= *S++;
 }
 break;
 case 53: // mstar
@@ -421,7 +425,7 @@ case 54: // ssmod
 {
 	d = (int64_t)top;
 	m = (int64_t)N;
-	n = (int64_t)(*(S - 1));
+	n = (int64_t)(*(S + 1));
 	n *= m;
 	pop;
 	top = (int32_t)(n / d);
@@ -432,7 +436,7 @@ case 55: // stasl
 {
 	d = (int64_t)top;
 	m = (int64_t)N;
-	n = (int64_t)(*(S - 1));
+	n = (int64_t)(*(S + 1));
 	n *= m;
 	pop; pop;
 	top = (int32_t)(n / d);
@@ -445,13 +449,13 @@ case 56: // pick
 break;
 case 57: // pstor
 {
-	DATA(top) += *S--, pop;
+	DATA(top) += *S++, pop;
 }
 break;
 case 58: // dstor
 {
-	DATA(top) = *S--;
-	DATA(top + 4) = *S--;
+	DATA(top) = *S++;
+	DATA(top + 4) = *S++;
 	pop;
 }
 break;
@@ -464,7 +468,7 @@ case 59: // dat
 break;
 case 60: // count
 {
-	*++S = top + 1;
+	*--S = top + 1;
 	top = cData[top];
 }
 break;
@@ -476,12 +480,12 @@ break;
 case 62: // max
 {
 	if (top < N) pop;
-	else S--;
+	else S++;
 }
 break;
 case 63: // min
 {
-	if (top < N) S--;
+	if (top < N) S++;
 	else pop;
 }
 break;
@@ -496,7 +500,7 @@ default:
 #if 0
 void great(void)
 {
-	top = (*S-- > top) LOGICAL;
+	top = (*S++ > top) LOGICAL;
 }
 #endif
 
