@@ -9,8 +9,9 @@ OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
-CPU = --target=arm-none-eabi -mcpu=cortex-m0 -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
-CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostdlib -nostartfiles
+CPU = --target=arm-none-eabi -mcpu=cortex-m0
+OPT += -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
+CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostartfiles
 LDFLAGS = -Wl,--gc-sections
 MAP = memmap.llvm
 LIBS = -lclang_rt.builtins -lc
@@ -37,7 +38,7 @@ dict32le.h: boot.out hex2h.awk
 	awk -f hex2h.awk boot.out > $@
 
 vectors.o : vectors.s
-	$(TCC) $(CFLAGS) -c vectors.s -o vectors.o
+	$(TCC) $(CPU) -c vectors.s -o vectors.o
 
 ceforth33.s : dict32le.h ceforth33.c
 	$(TCC) $(CFLAGS) -S -fverbose-asm ceforth33.c
