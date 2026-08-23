@@ -2,7 +2,7 @@ RM = rm -f
 TARGET ?= llvm
 TCC = clang
 
-OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
+OPT = -Os -fomit-frame-pointer # 2876 bytes
 # OPT = -O1 -fomit-frame-pointer # 3544 bytes
 # OPT = -O2 -fomit-frame-pointer # 3356 bytes
 # OPT = -O3 -fomit-frame-pointer # 3836 bytes
@@ -10,7 +10,7 @@ OPT = -Os -fomit-frame-pointer -ffunction-sections -fdata-sections # 2876 bytes
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = --target=arm-none-eabi -mcpu=cortex-m0
-OPT += -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
+OPT += -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
 CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostartfiles
 LDFLAGS = -Wl,--gc-sections
 MAP = memmap.llvm
