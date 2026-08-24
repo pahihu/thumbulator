@@ -11,9 +11,9 @@ OPT = -O3 -fomit-frame-pointer # 3180/3264 bytes	119.12/101.17	2.108s @ 48MHz
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = -mcpu=cortex-m0
-OPT += -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
-CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostartfiles
-LDFLAGS = -Wl,--gc-sections
+OSIZE = -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
+CFLAGS =  -Wall $(CPU) $(OPT) $(OSIZE) -nostdlib -nostartfiles
+LDFLAGS = -Wl,--print-memory-usage -Wl,--gc-sections
 MAP = memmap.gnu
 LIBS = -lgcc
 
@@ -47,6 +47,7 @@ ceforth33.s : ceforth33.c
 ceforth33.elf : dict32le.h $(OBJ) $(MAP)
 	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T $(MAP) -o $@ $(LDFLAGS) $(LIBS)
 	$(ARMGNU)-size $@
+	$(ARMGNU)-nm --print-size --size-sort --radix=d $@ | tail -10
 
 ceforth33.bin : ceforth33.elf
 	$(ARMGNU)-objdump -D $< > ceforth33.list
