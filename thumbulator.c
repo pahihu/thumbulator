@@ -34,6 +34,7 @@ static int DBUGREG   = 0;
 static int DBUG      = 0;
 static int DBUGUART  = 0;
 static int DBUGSTACK = 0;
+static int DBUGPC    = 0;
 static int DISS      = 0;
 static int DISR      = 0;
 
@@ -1061,8 +1062,9 @@ if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
         {
             if((rc&1)==0)
             {
-                fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
-                exit(1);
+                //ATfE 22.1.0 generates code which triggers this
+                if(DBUGPC)fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
+            //    exit(1);
             }
             rc&=~1; //write_register may do this as well
             rc+=2; //The program counter is special
