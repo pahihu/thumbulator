@@ -35,7 +35,12 @@
 #include <stdarg.h>
 
 # define    PTR(x)  (x)
+#ifdef __clang__
+# define    DATA(x) (*(&data[(x) >> 2]))
+#else
+//generates __aeabi_uread4/uwrite4 calls
 # define    DATA(x) (*(int32_t*)(cData+(x)))
+#endif
 # define	FALSE	0
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE

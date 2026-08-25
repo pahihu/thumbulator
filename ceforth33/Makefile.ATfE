@@ -2,25 +2,26 @@ RM = rm -f
 TARGET ?= llvm
 TCC = clang
 
-OPT = -Os -fomit-frame-pointer # 2876 bytes
-# OPT = -O1 -fomit-frame-pointer # 3544 bytes
-# OPT = -O2 -fomit-frame-pointer # 3356 bytes
-# OPT = -O3 -fomit-frame-pointer # 3836 bytes
+OPT = --config=Osize.cfg --config=OmaxLTO.cfg  # 3046/2954	148.67/116.32
+# OPT = --config=Omax.cfg --config=OmaxLTO.cfg  # 3860/3580 DOES NOT RUN/118.41
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = --target=arm-none-eabi -mcpu=cortex-m0
-OPT += -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
-CFLAGS =  -Wall $(CPU) $(OPT) -nostdlib -nostartfiles
-LDFLAGS = -Wl,--gc-sections
+# OSIZE = -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
+CFLAGS =  $(CPU) -nostdlib $(OPT) -Wall
+LDFLAGS = -nostartfiles -Wl,--gc-sections
 MAP = memmap.llvm
 LIBS = -lclang_rt.builtins -lc
+SYSOBJS = vectors.o nolib.o nolib_puti.c
 
 all : ceforth ceforth33.bin
 
-SRC = ceforth33.c nolib.c
-OBJ = vectors.o $(SRC:.c=.o)
+SRCS = ceforth33.c nolib.c
+OBJS = $(SRCS:.c=.o)
 
+ 
+# HOSTED
 ceforth.boot : ceforth33.c bootlib.c nolib.h
 	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
 
@@ -34,25 +35,30 @@ run.hosted: ceforth
 boot.out: ceforth.boot
 	echo bye | ./ceforth.boot > boot.out
 
+
+# GENERATE IMAGE
 dict32le.h: boot.out hex2h.awk
 	awk -f hex2h.awk boot.out > $@
 
 vectors.o : vectors.s
 	$(TCC) $(CPU) -c vectors.s -o vectors.o
 
-ceforth33.s : dict32le.h ceforth33.c
-	$(TCC) $(CFLAGS) -S -fverbose-asm ceforth33.c
+%.o: %.c
+	$(TCC) $(CFLAGS) -c $< -o $@
 
-ceforth33.elf : dict32le.h $(OBJ) $(MAP)
-	$(TCC) $(CFLAGS) $(LDFLAGS) $(OBJ) -T $(MAP) -o $@ $(LIBS)
-	$(TARGET)-size $@
-
-ceforth33.bin : ceforth33.elf
-	$(TARGET)-objdump -D $< > ceforth33.list
-	$(TARGET)-objdump -t $< > ceforth33.map
-	awk -f symbols.awk ceforth33.map > ceforth33.sym
+%.bin: %.elf
 	$(TARGET)-objcopy $< $@ -O binary
 	ls -l $@
+
+%.elf: %.o $(SYSOBJS) $(MAP)
+	$(TCC) $(CPU) $(LDFLAGS) $< $(SYSOBJS) -T $(MAP) -o $@ $(LIBS)
+	$(TARGET)-size $@
+	$(TARGET)-objdump -d $@ > $(basename $@).list
+	$(TARGET)-objdump -t $@ > $(basename $@).map
+	awk -f symbols.awk $(basename $@).map > $(basename $@).sym
+
+ceforth33.s : dict32le.h ceforth33.c
+	$(TCC) $(CFLAGS) -S -fverbose-asm ceforth33.c
 
 run: ceforth33.bin
 	$(RM) run.log
@@ -69,3 +75,7 @@ clean:
 	$(RM) ceforth33.s
 
 # vim:noet :
+# dependencies
+ceforth33.o : dict32le.h ceforth33.c
+ceforth33.elf : ceforth33.o $(SYSOBJS)
+

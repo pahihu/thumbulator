@@ -19,7 +19,7 @@ LIBS = -lgcc
 
 all : ceforth ceforth33.bin
 
-SRC = ceforth33.c nolib.c
+SRC = ceforth33.c nolib.c nolib_puti.c
 OBJ = vectors.o $(SRC:.c=.o)
 
 ceforth.boot : ceforth33.c bootlib.c nolib.h
