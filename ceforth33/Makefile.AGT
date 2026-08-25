@@ -2,11 +2,11 @@ RM = rm -f
 ARMGNU ?= arm-none-eabi
 
 CC = $(ARMGNU)-gcc -flto
-#								  bytes/FLTO		 Mclks/FLTO
-# OPT = -Os -fomit-frame-pointer # 2634/2618 bytes	233.30/233.30
-# OPT = -O1 -fomit-frame-pointer # 3252/3240 bytes	120.43/120.19
-# OPT = -O2 -fomit-frame-pointer # 3024/3024 bytes	119.17/119.17
-OPT = -O3 -fomit-frame-pointer # 3180/3264 bytes	119.12/101.17	2.108s @ 48MHz
+#								  	bytes/FLTO	Mclks/FLTO
+# OPT = -Os -fomit-frame-pointer #	2634/2618	233.30/233.30
+# OPT = -O1 -fomit-frame-pointer #	3252/3240	120.19/120.19
+# OPT = -O2 -fomit-frame-pointer #	3012/3024	119.17/119.17
+OPT = -O3 -fomit-frame-pointer #	3168/3264	119.12/101.17
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #

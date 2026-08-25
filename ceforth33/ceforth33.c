@@ -3,6 +3,8 @@
 /******************************************************************************/
 
 /* Andras Pahi                                                                */
+/* 25aug26ap                                                                  */
+ * use __builtin_assume_aligned() (w/o clang generates uread/uwrite4)         */
 /* 23aug26ap                                                                  */
 /* S and R grows downward instead of upward (6% faster on Cortex-M0)          */
 /* 21aug26ap                                                                  */
@@ -35,12 +37,8 @@
 #include <stdarg.h>
 
 # define    PTR(x)  (x)
-#ifdef __clang__
-# define    DATA(x) (*(&data[(x) >> 2]))
-#else
-//generates __aeabi_uread4/uwrite4 calls
-# define    DATA(x) (*(int32_t*)(cData+(x)))
-#endif
+//generates __aeabi_uread4/uwrite4 calls w/o this hint
+# define    DATA(x) (*(int32_t*)__builtin_assume_aligned(cData+(x), 4))
 # define	FALSE	0
 # define	TRUE	-1
 # define	LOGICAL ? TRUE : FALSE

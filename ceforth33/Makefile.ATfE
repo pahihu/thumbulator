@@ -2,13 +2,12 @@ RM = rm -f
 TARGET ?= llvm
 TCC = clang
 
-OPT = --config=Osize.cfg --config=OmaxLTO.cfg  # 3046/2954	148.67/116.32
-# OPT = --config=Omax.cfg --config=OmaxLTO.cfg  # 3860/3580 DOES NOT RUN/118.41
+OPT = --config=Osize.cfg --config=OmaxLTO.cfg # 2910/2866 123.92/109.46
+# OPT = --config=Omax.cfg --config=OmaxLTO.cfg # 3724/3488 FAILS/111.56
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = --target=arm-none-eabi -mcpu=cortex-m0
-# OSIZE = -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-strict-aliasing -fno-common
 CFLAGS =  $(CPU) -nostdlib $(OPT) -Wall
 LDFLAGS = -nostartfiles -Wl,--gc-sections
 MAP = memmap.llvm
