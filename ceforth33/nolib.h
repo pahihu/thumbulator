@@ -44,6 +44,12 @@ void   exit(int);
 void hexstring ( uint32_t d );
 uint32_t prand32 ( uint32_t x );
 
+void *sbrk(int increment);
+void *malloc(size_t size);
+int *__errno();
+
+#define errno   (*(__errno()))
+
 #endif
 
 #endif

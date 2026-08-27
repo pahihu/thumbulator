@@ -48,7 +48,7 @@
 # define	popR    *R++
 # define	pushR   *--R
 # define    N       *S
-int32_t *data;
+static int32_t *data;
 
 #if defined(BOOT) || defined(HOSTED)
 #define notmain     main
@@ -70,7 +70,7 @@ int32_t IZ;
 
 unsigned char cData[65536] = { 0, 0, 0, 0 };
 #else
-unsigned char cData[IMAGE_SIZE] = {
+static unsigned char cData[IMAGE_SIZE] = {
 #include "dict32le.h"
 };
 #endif
@@ -85,14 +85,14 @@ unsigned char cData[IMAGE_SIZE] = {
 #define _DROP    pop
 #define _OVER    push *(S + 1)
 
-int vfm(int32_t p)
+static int vfm(int32_t p)
 {
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
 int64_t d, n, m;
-int32_t *R;
-int32_t *S;
-int32_t top;
+register int32_t *R;
+register int32_t *S;
+register int32_t top;
 int32_t  P, IP, WP;
 unsigned char bytecode;
 

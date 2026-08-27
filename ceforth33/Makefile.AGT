@@ -6,19 +6,20 @@ ARMGNU ?= arm-none-eabi
 
 CC = $(ARMGNU)-gcc -flto
 #								  	bytes/FLTO	Mclks/FLTO
-# OPT = -Os -fomit-frame-pointer #	2634/2618	233.30/233.30
-# OPT = -O1 -fomit-frame-pointer #	3252/3240	120.19/120.19
-# OPT = -O2 -fomit-frame-pointer #	3012/3024	119.17/119.17
-OPT = -O3 -fomit-frame-pointer #	3168/3264	119.12/101.17
+# OPT = -Os -fomit-frame-pointer #	2618	229.00
+# OPT = -O1 -fomit-frame-pointer #	3588	119.92
+# OPT = -O2 -fomit-frame-pointer #	3412	114.86
+OPT = -O3 -fomit-frame-pointer #	3964	100.39
 #
 # https://www.systemonchips.com/efficient-code-generation-with-gnu-arm-for-cortex-m0-m1/
 #
 CPU = -mcpu=cortex-m0
-OSIZE = -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common
-CFLAGS =  -Wall $(CPU) $(OPT) $(OSIZE) -nostdlib -nostartfiles
-LDFLAGS = -Wl,--print-memory-usage -Wl,--gc-sections
+OSIZE = -ffunction-sections -fdata-sections -ffreestanding -fno-exceptions -fno-toplevel-reorder -fno-strict-aliasing -fno-common -mno-unaligned-access -funroll-loops
+CFLAGS =  -Wall $(CPU) $(OPT) $(OSIZE) -nostdlib -nostartfiles -DUSE_FOR_LOOPS=1
+LDFLAGS = -Wl,--print-memory-usage -Wl,--gc-sections #-Wl,--print-gc-sections
 MAP = memmap.gnu
-LIBS = -lgcc
+SYSOBJS = vectors.o nolib.o nolib_puti.o
+LIBS = -lm -lgcc
 
 all : ceforth ceforth33.bin
 
@@ -46,6 +47,18 @@ vectors.o : vectors.s
 
 ceforth33.s : ceforth33.c
 	$(ARMGNU)-gcc $(CFLAGS) -S -fverbose-asm ceforth33.c
+
+%.elf: %.o $(SYSOBJS) $(MAP)
+	$(ARMGNU)-gcc $(CFLAGS) $< $(SYSOBJS) -T $(MAP) -o $@ $(LDFLAGS) $(LIBS)
+	$(ARMGNU)-size $@
+	$(ARMGNU)-nm --print-size --size-sort --radix=d $@ | tail -10
+  
+%.bin: %.elf
+	$(ARMGNU)-objdump -D $< > $(basename $@).list
+	$(ARMGNU)-objdump -t $< > $(basename $@).map
+	awk -f symbols.awk $(basename $@).map > $(basename $@).sym
+	$(ARMGNU)-objcopy $< $@ -O binary
+	ls -l $@
 
 ceforth33.elf : dict32le.h $(OBJ) $(MAP)
 	$(ARMGNU)-gcc $(CFLAGS) $(OBJ) -T $(MAP) -o $@ $(LDFLAGS) $(LIBS)

@@ -52,8 +52,13 @@ void *memset ( void *b, int c, size_t size )
     unsigned char *p;
 
     p = b;
+#ifdef USE_FOR_LOOPS
+    size_t i;
+    for (i = 0; i < size; i++) *p++ = c;
+#else
     while (size--)
         *p++ = c;
+#endif
 
     return b;
 }
@@ -62,10 +67,15 @@ void *memcpy ( void *dst, const void *src, size_t size )
 {
     unsigned char *p;
     const unsigned char *q;
+    size_t i;
 
     p = dst; q = src;
+#ifdef USE_FOR_LOOPS
+    for (i = 0; i < size; i++) *p++ = *q++;
+#else
     while (size--)
         *p++ = *q++;
+#endif
 
     return dst;
 }
@@ -139,4 +149,30 @@ void exit(int status)
     asm("b .");
 }
 //------------------------------------------------------------------------
+static int __nolib_errno;
+int *__errno()
+{
+    return &__nolib_errno;
+}
+extern int _data_end;
+static void *__data_seg = 0;
+void *sbrk(int increment)
+{
+    void *ret;
+
+    if (0 == __data_seg)
+    {
+        __data_seg = (void*)&_data_end;
+        puts("__data_seg="); putx((int)__data_seg,8); nl();
+    }
+
+    ret = __data_seg;
+    __data_seg += increment;
+    return ret;
+}
+//------------------------------------------------------------------------
+void *malloc(size_t size)
+{
+    return sbrk(size);
+}
 // vim:set ts=4 sw=4 et:
