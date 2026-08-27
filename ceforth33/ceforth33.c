@@ -4,7 +4,7 @@
 
 /* Andras Pahi                                                                */
 /* 25aug26ap                                                                  */
- * use __builtin_assume_aligned() (w/o clang generates uread/uwrite4)         */
+/* use __builtin_assume_aligned() (w/o clang generates uread/uwrite4)         */
 /* 23aug26ap                                                                  */
 /* S and R grows downward instead of upward (6% faster on Cortex-M0)          */
 /* 21aug26ap                                                                  */

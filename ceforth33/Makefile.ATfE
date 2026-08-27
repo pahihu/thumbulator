@@ -1,3 +1,6 @@
+#
+# Arm Toolchain for Embedded (LLVM)
+#
 RM = rm -f
 TARGET ?= llvm
 TCC = clang

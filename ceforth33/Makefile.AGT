@@ -1,3 +1,6 @@
+#
+# Arm GNU Toolchain (GCC)
+#
 RM = rm -f
 ARMGNU ?= arm-none-eabi
 
