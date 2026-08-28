@@ -27,10 +27,10 @@ SRC = ceforth33.c nolib.c nolib_puti.c
 OBJ = vectors.o $(SRC:.c=.o)
 
 ceforth.boot : ceforth33.c bootlib.c nolib.h
-	cc -Wall -o $@ -DBOOT=1 ceforth33.c bootlib.c
+	cc -x c -Wall -o $@ -DBOOT=1 ceforth33.c.org bootlib.c
 
 ceforth : dict32le.h ceforth33.c bootlib.c nolib.h
-	cc -Wall -DHOSTED=1 -o $@ ceforth33.c bootlib.c
+	cc -x c -Wall -DHOSTED=1 -o $@ ceforth33.c.org bootlib.c
 
 run.hosted: ceforth
 	$(RM) run.hosted.log
