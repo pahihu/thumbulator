@@ -50,6 +50,10 @@
 # define    N       *S
 static int32_t *data;
 
+# define    R0      (rack + 256)
+# define    S0      (stack + 256)
+
+
 #if defined(BOOT) || defined(HOSTED)
 #define notmain     main
 #define IMAGE_SIZE  65536
@@ -57,14 +61,12 @@ static int32_t *data;
 #define IMAGE_SIZE
 #endif
 
-#define sptr_t  int32_t
-
 #if defined(BOOT)
 
 int32_t rack[256] = { 0 };
 int32_t stack[256] = { 0 };
-int32_t *R = rack + 256;
-int32_t *S = stack + 256;
+int32_t *R = R0;
+int32_t *S = S0;
 int32_t P, IP, thread, len;
 int32_t IZ;
 
@@ -99,8 +101,8 @@ unsigned char bytecode;
 P = p;
 WP = 4;
 IP = 0;
-S = stack + 256;
-R = rack + 256;
+S = S0;
+R = R0;
 top = 0;
 while (TRUE) {
 bytecode = (unsigned char)cData[P++];
@@ -899,7 +901,7 @@ int notmain(void)
 	data = (int32_t*) cData;
 #ifdef BOOT
 	P = 512;
-	R = rack;
+	R = R0;
     thread = 0;
 
 	// Kernel
