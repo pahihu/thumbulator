@@ -2782,9 +2782,9 @@ void stop_server(void)
 //-------------------------------------------------------------------
 const char options[] =
 #if HAVE_X11
-	"c:d:e:g:h:m:o:p:rsv?"
+	"c:d:e:f:g:h:m:o:p:rsv?"
 #else
-	"c:d:e:h:m:o:p:rsv?"
+	"c:d:e:f:h:m:o:p:rsv?"
 #endif
 ;
 //-------------------------------------------------------------------
