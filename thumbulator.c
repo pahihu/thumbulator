@@ -65,6 +65,10 @@ FILE *fpvcd;
 #define SYSTICK_COUNTFLAG   0x00010000
 #define SYSTICK_MASK        (SYSTICK_COUNTFLAG | SYSTICK_CLKSOURCE | SYSTICK_TICKINT | SYSTICK_ENABLE)
 
+#define CALIB_TENMS         0x00FFFFFF
+#define CALIB_SKEW          0x40000000
+#define CALIB_NOREF         0x80000000
+
 unsigned int systick_ctrl;
 unsigned int systick_reload;
 unsigned int systick_count;
@@ -94,6 +98,7 @@ unsigned int reg_event; //event register
 typedef enum {NoWait=0,WaitForEvt,WaitForInt} WaitType;
 WaitType waiting; //wait for
 
+unsigned int cpuhz;
 unsigned int cpuid;
 unsigned int entry = 0;
 const char *output_file_name;
@@ -507,6 +512,7 @@ if(DISS)
                 case 0xE000E018:
                 {
                     systick_count=data&0x00FFFFFF;
+                    systick_ctrl &= (~SYSTICK_COUNTFLAG);
                     break;
                 }
                 case 0xE000E01C:
@@ -576,7 +582,7 @@ if(DBUGRAM) fprintf(stderr,"0x%04X\n",data);
 //-------------------------------------------------------------------
 unsigned int read32 ( unsigned int addr )
 {
-    unsigned int data;
+    unsigned int data = 0;
 
 if(DBUG) fprintf(stderr,"read32(0x%08X)=",addr);
     switch(addr&0xF0000000)
@@ -2636,12 +2642,21 @@ Return:
 //-------------------------------------------------------------------
 int reset ( void )
 {
+    unsigned int tenms;
+
     memset(ram,0x00,sizeof(ram));
 
     systick_ctrl=SYSTICK_CLKSOURCE;
     systick_reload=0x00000000;
     systick_count=0x00000000;
-    systick_calibrate=0x00ABCDEF;
+    /*--------------CALIB-------------*/
+    systick_calibrate=CALIB_NOREF;
+    if (cpuhz % 100)
+        systick_calibrate |= CALIB_SKEW;
+    tenms = cpuhz / 100;
+    if (tenms < 0x01000000)
+        systick_calibrate |= tenms;
+    /*--------------------------------*/
     handler_mode=0;
     cpsr=0;
     reg_event=0;
@@ -2780,6 +2795,7 @@ static void usage()
     fprintf(stderr, "    -c <cpuid>         set CPUID\n");
     fprintf(stderr, "    -d <dump.out>      set dump output file name\n");
     fprintf(stderr, "    -e <entry>         set entry address\n");
+    fprintf(stderr, "    -f <freq>          set CPU frequency in Hz (default 8MHz)\n");
 #if HAVE_X11
     fprintf(stderr, "    -g WxH             init gfx framebuffer\n");
 #endif
@@ -2798,10 +2814,8 @@ void handle_cmd_line(int argc, char *argv[])
 {
 	int i, c, fd;
     const char *p, *opt, *optarg;
-    char tmp[128];
 	unsigned int org = 0;
     off_t off;
-    int mem_size;
 
     if (1 == argc)
         usage();
@@ -2826,25 +2840,31 @@ void handle_cmd_line(int argc, char *argv[])
 		case 'c': cpuid = htoi(optarg); break;
 		case 'd': output_file_name = optarg; break;
 		case 'e': entry = htoi(optarg); break;
+        case 'f': cpuhz = atoi(optarg); break;
 #if HAVE_X11
         case 'g':
-            strcpy(tmp, optarg);
-            p = strchr(tmp, 'x');
-            if (NULL == p) {
-                fprintf(stderr,"Define the resolution as WxH!");
-                exit(1);
-            }
-            *p = 0;
-            fb_width  = atoi(tmp); fb_height = atoi(p + 1);
-            mem_size = fb_width * fb_height * 4;
-            if (mem_size > 15*1024*1024) {
-                fprintf(stderr, "Max. 15MB frame buffer supported!");
-                exit(1);
-            }
-            frame_buffer = malloc(mem_size);
-            if (NULL == frame_buffer) {
-                fprintf(stderr, "Cannot allocate frame buffer!");
-                exit(1);
+            {
+                char tmp[128];
+                int mem_size;
+
+                strcpy(tmp, optarg);
+                p = strchr(tmp, 'x');
+                if (NULL == p) {
+                    fprintf(stderr,"Define the resolution as WxH!");
+                    exit(1);
+                }
+                *p = 0;
+                fb_width  = atoi(tmp); fb_height = atoi(p + 1);
+                mem_size = fb_width * fb_height * 4;
+                if (mem_size > 15*1024*1024) {
+                    fprintf(stderr, "Max. 15MB frame buffer supported!");
+                    exit(1);
+                }
+                frame_buffer = malloc(mem_size);
+                if (NULL == frame_buffer) {
+                    fprintf(stderr, "Cannot allocate frame buffer!");
+                    exit(1);
+                }
             }
             break;
 #endif
@@ -2881,6 +2901,7 @@ int main ( int argc, char *argv[] )
     init_syms();
     output_vcd=0;
     cpuid = 0;
+    cpuhz = 8000000;
     read_fd = STDIN_FILENO;
     write_fd = STDOUT_FILENO;
     error_fd = STDERR_FILENO;
