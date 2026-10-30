@@ -59,6 +59,12 @@ unsigned int vcdcount;
 unsigned int output_vcd = 0;
 FILE *fpvcd;
 
+#define SYSTICK_ENABLE      0x00000001
+#define SYSTICK_TICKINT     0x00000002
+#define SYSTICK_CLKSOURCE   0x00000004
+#define SYSTICK_COUNTFLAG   0x00010000
+#define SYSTICK_MASK        (SYSTICK_COUNTFLAG | SYSTICK_CLKSOURCE | SYSTICK_TICKINT | SYSTICK_ENABLE)
+
 unsigned int systick_ctrl;
 unsigned int systick_reload;
 unsigned int systick_count;
@@ -485,8 +491,8 @@ if(DISS)
                     unsigned int old;
 
                     old=systick_ctrl;
-                    systick_ctrl = data&0x00010007;
-                    if(((old&1)==0)&&(systick_ctrl&1))
+                    systick_ctrl = data&SYSTICK_MASK;
+                    if(((old&SYSTICK_ENABLE)==0)&&(systick_ctrl&SYSTICK_ENABLE))
                     {
                         //timer started, load count
                         systick_count=systick_reload;
@@ -660,7 +666,7 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
                 case 0xE000E010:
                 {
                     data = systick_ctrl;
-                    systick_ctrl&=(~0x00010000);
+                    systick_ctrl&=(~SYSTICK_COUNTFLAG);
                     return(data);
                 }
                 case 0xE000E014:
@@ -879,7 +885,7 @@ int execute ( void )
 
     if(handler_mode)
     {
-        if((pc&0xF0000000)==0xF0000000)
+        if((pc&0xFFFFFFF0)==0xFFFFFFF0) //EXC_RETURN?
         {
             unsigned int sp;
 
@@ -897,7 +903,7 @@ int execute ( void )
             write_register(13,sp);
         }
     }
-    if(systick_ctrl&1)
+    if(systick_ctrl&SYSTICK_ENABLE)
     {
         if(systick_count)
         {
@@ -906,13 +912,13 @@ int execute ( void )
         else
         {
             systick_count=systick_reload;
-            systick_ctrl|=0x00010000;
+            systick_ctrl|=SYSTICK_COUNTFLAG;
         }
     }
 
-    if((systick_ctrl&3)==3)
+    if((systick_ctrl&(SYSTICK_TICKINT|SYSTICK_ENABLE))==(SYSTICK_TICKINT|SYSTICK_ENABLE))
     {
-        if(systick_ctrl&0x00010000)
+        if(systick_ctrl&SYSTICK_COUNTFLAG)
         {
             if(handler_mode==0)
             {
@@ -932,9 +938,8 @@ int execute ( void )
                 write_register(13,sp);
                 pc=fetch32(0x0000003C); //systick vector
                 pc+=2;
-                //write_register(14,0xFFFFFF00);
+                //trigger return to Thread mode; use MSP for the stack frame
                 write_register(14,0xFFFFFFF9);
-
                 handler_mode=1;
             }
         }
@@ -2633,7 +2638,7 @@ int reset ( void )
 {
     memset(ram,0x00,sizeof(ram));
 
-    systick_ctrl=0x00000004;
+    systick_ctrl=SYSTICK_CLKSOURCE;
     systick_reload=0x00000000;
     systick_count=0x00000000;
     systick_calibrate=0x00ABCDEF;
