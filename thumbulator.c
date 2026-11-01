@@ -341,7 +341,7 @@ void dump_counters ( void )
 {
     printf("\n\n");
     printf("clocks       %lu\n",clks);
-    printf("instructions %lu\n",instructions);
+    printf("instructions %lu (CPI %.2f)\n",instructions,(clks + 0.0)/instructions);
     printf("fetches      %lu\n",fetches);
     printf("reads        %lu\n",reads);
     printf("writes       %lu\n",writes);
@@ -873,7 +873,7 @@ int handle_bkpt(unsigned int bp, unsigned int arg)
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
-int execute ( void )
+int execute ( unsigned int dclks )
 {
     unsigned int pc;
     unsigned int sp;
@@ -911,13 +911,14 @@ int execute ( void )
     }
     if(systick_ctrl&SYSTICK_ENABLE)
     {
-        if(systick_count)
+        if(systick_count >= dclks)
         {
-            systick_count--;
+            systick_count -= dclks;
         }
         else
         {
-            systick_count=systick_reload;
+            systick_count -= dclks;
+            systick_count += systick_reload;
             systick_ctrl|=SYSTICK_COUNTFLAG;
         }
     }
@@ -1079,6 +1080,7 @@ if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
             }
             rc&=~1; //write_register may do this as well
             rc+=2; //The program counter is special
+            clks += 2;
         }
 //fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
         write_register(rd,rc);
@@ -1231,7 +1233,7 @@ if(DISS) fprintf(stderr,"asrs  r%u,r%u",rd,rs);
 if(DISS) fprintf(stderr,"beq   0x%08X",rb-3);
                 if(cpsr&CPSR_Z)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1239,7 +1241,7 @@ if(DISS) fprintf(stderr,"beq   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bne   0x%08X",rb-3);
                 if(!(cpsr&CPSR_Z))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1247,7 +1249,7 @@ if(DISS) fprintf(stderr,"bne   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bcs   0x%08X",rb-3);
                 if(cpsr&CPSR_C)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1255,7 +1257,7 @@ if(DISS) fprintf(stderr,"bcs   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bcc   0x%08X",rb-3);
                 if(!(cpsr&CPSR_C))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1263,7 +1265,7 @@ if(DISS) fprintf(stderr,"bcc   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bmi   0x%08X",rb-3);
                 if(cpsr&CPSR_N)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1271,7 +1273,7 @@ if(DISS) fprintf(stderr,"bmi   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bpl   0x%08X",rb-3);
                 if(!(cpsr&CPSR_N))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1280,7 +1282,7 @@ if(DISS) fprintf(stderr,"bpl   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bvs   0x%08X",rb-3);
                 if(cpsr&CPSR_V)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1288,7 +1290,7 @@ if(DISS) fprintf(stderr,"bvs   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bvc   0x%08X",rb-3);
                 if(!(cpsr&CPSR_V))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1297,7 +1299,7 @@ if(DISS) fprintf(stderr,"bvc   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bhi   0x%08X",rb-3);
                 if((cpsr&CPSR_C)&&(!(cpsr&CPSR_Z)))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1305,7 +1307,7 @@ if(DISS) fprintf(stderr,"bhi   0x%08X",rb-3);
 if(DISS) fprintf(stderr,"bls   0x%08X",rb-3);
                 if((cpsr&CPSR_Z)||(!(cpsr&CPSR_C)))
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1316,7 +1318,7 @@ if(DISS) fprintf(stderr,"bge   0x%08X",rb-3);
                 if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
                 if(ra)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1327,7 +1329,7 @@ if(DISS) fprintf(stderr,"blt   0x%08X",rb-3);
                 if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
                 if(ra)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1339,7 +1341,7 @@ if(DISS) fprintf(stderr,"bgt   0x%08X",rb-3);
                 if(cpsr&CPSR_Z) ra=0;
                 if(ra)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1351,7 +1353,7 @@ if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
                 if(cpsr&CPSR_Z) ra++;
                 if(ra)
                 {
-                    write_register(15,rb);
+                    write_register(15,rb); clks++;
                 }
                 goto Return;
 
@@ -1373,7 +1375,7 @@ if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
         rb+=pc;
         rb+=2;
 if(DISS) fprintf(stderr,"b     0x%08X",rb-4);
-        write_register(15,rb);
+        write_register(15,rb); clks++;
         goto Return;
     }
 
@@ -1412,7 +1414,7 @@ if(DISS) fprintf(stderr,"\n");
             if(rb&1<<10) rb|=(~((1<<11)-1)); //sign extend
             rb<<=12;
             rb+=pc;
-            write_register(14,rb);
+            write_register(14,rb); clks++;
             return(0);
         }
         else
@@ -1424,8 +1426,8 @@ if(DISS) fprintf(stderr,"\n");
             rb+=2;
 
 if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
-            write_register(14,(pc-2)|1);
-            write_register(15,rb);
+            write_register(14,(pc-2)|1); clks++;
+            write_register(15,rb); clks++;
             goto Return;
         }
         else
@@ -1442,8 +1444,8 @@ if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
 printf("hello\n");
 
 if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
-            write_register(14,(pc-2)|1);
-            write_register(15,rb);
+            write_register(14,(pc-2)|1); clks++;
+            write_register(15,rb); clks++;
             goto Return;
 
 
@@ -1458,7 +1460,7 @@ if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
 if(DISS) fprintf(stderr,"blx   r%u",rm);
         rc=read_register(rm);
 //fprintf(stderr,"blx r%u 0x%X 0x%X\n",rm,rc,pc);
-        rc+=2;
+        rc+=2; clks++;
         if(rc&1)
         {
             write_register(14,(pc-2)|1);
@@ -1479,7 +1481,7 @@ if(DISS) fprintf(stderr,"blx   r%u",rm);
         rm=(inst>>3)&0xF;
 if(DISS) fprintf(stderr,"bx    r%u",rm);
         rc=read_register(rm);
-        rc+=2;
+        rc+=2; clks++;
 //fprintf(stderr,"bx r%u 0x%X 0x%X\n",rm,rc,pc);
         if(rc&1)
         {
@@ -1596,7 +1598,7 @@ if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
     //111100111011....
     if((inst&0xFFF0)==0xF3B0)
     {
-        inst=fetch16(pc-2);
+        inst=fetch16(pc-2); clks += 2;
         // ??? pc+=2;
         // ??? write_register(15,pc);
         
@@ -1664,7 +1666,7 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write_register(ra,read32(sp)); clks += 2;
+                write_register(ra,read32(sp)); clks++;
                 sp+=4;
             }
         }
@@ -1682,7 +1684,7 @@ if(DISS)
         rb<<=2;
 if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
-        rc=read32(rb); clks += 2;
+        rc=read32(rb); clks++;
         write_register(rd,rc);
         goto Return;
     }
@@ -1695,7 +1697,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
         rm=(inst>>6)&0x7;
 if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
-        rc=read32(rb); clks += 2;
+        rc=read32(rb); clks++;
         write_register(rd,rc);
         goto Return;
     }
@@ -1711,7 +1713,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
         ra&=~3;
         rb+=ra;
 if(DISS) fprintf(stderr,";@ 0x%X",rb);
-        rc=read32(rb); clks += 2;
+        rc=read32(rb); clks++;
         write_register(rd,rc);
         goto Return;
     }
@@ -1726,7 +1728,7 @@ if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
         ra=read_register(13);
         //ra&=~3;
         rb+=ra;
-        rc=read32(rb); clks += 2;
+        rc=read32(rb); clks++;
         write_register(rd,rc);
         goto Return;
     }
@@ -2001,6 +2003,7 @@ if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
             //}
             rc&=~1; //write_register may do this as well
             rc+=2; //The program counter is special
+            clks++;
         }
         write_register(rd,rc);
         goto Return;
@@ -2014,7 +2017,7 @@ if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
 if(DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
         ra=read_register(rd);
         rb=read_register(rm);
-        rc=ra*rb;
+        rc=ra*rb; clks += 31;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
@@ -2095,7 +2098,7 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write_register(ra,read32(sp)); clks += 2;
+                write_register(ra,read32(sp)); clks++;
                 sp+=4;
             }
         }
@@ -2157,14 +2160,14 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write32(rd,read_register(ra)); clks += 2;
+                write32(rd,read_register(ra)); clks++;
                 rd+=4;
             }
         }
         if(inst&0x100)
         {
             rc=read_register(14);
-            write32(rd,rc); clks += 2; //read_register(14));
+            write32(rd,rc); //read_register(14));
 
             if((rc&1)==0)
             {
@@ -2313,7 +2316,7 @@ if(DISS)
         {
             if(inst&rb)
             {
-                write32(sp,read_register(ra)); clks += 2;
+                write32(sp,read_register(ra)); clks++;
                 sp+=4;
             }
         }
@@ -2331,7 +2334,7 @@ if(DISS)
 if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
         rb=read_register(rn)+rb;
         rc=read_register(rd);
-        write32(rb,rc); clks += 2;
+        write32(rb,rc); clks++;
         goto Return;
     }
 
@@ -2344,7 +2347,7 @@ if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
 if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
         rb=read_register(rn)+read_register(rm);
         rc=read_register(rd);
-        write32(rb,rc); clks += 2;
+        write32(rb,rc); clks++;
         goto Return;
     }
 
@@ -2358,7 +2361,7 @@ if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
         rb=read_register(13)+rb;
 //fprintf(stderr,"0x%08X\n",rb);
         rc=read_register(rd);
-        write32(rb,rc); clks += 2;
+        write32(rb,rc); clks++;
         goto Return;
     }
 
@@ -2610,6 +2613,7 @@ if(DISS) fprintf(stderr,"yield");
         //WFE
         if((rm==0x2)&&(rd==0x0))
         {
+            clks++;
             if(reg_event)reg_event=0;
             else waiting=WaitForEvt;
 if(DISS) fprintf(stderr,"wfe");
@@ -2618,6 +2622,7 @@ if(DISS) fprintf(stderr,"wfe");
         //WFI
         if((rm==0x3)&&(rd==0x0))
         {
+            clks++;
             waiting=WaitForInt;
 if(DISS) fprintf(stderr,"wfi");
             goto Return;
@@ -2685,6 +2690,8 @@ int reset ( void )
 int run ( void )
 {
     char c;
+    unsigned int dclks = 0, pclks;
+
     reset();
     while(1)
     {
@@ -2706,7 +2713,9 @@ int run ( void )
         }
         if(WaitForInt!=waiting)
         {
-            if(execute()) break;
+            pclks = clks;
+            if(execute(dclks)) break;
+            dclks = clks - pclks;
         }
     }
     dump_counters();
