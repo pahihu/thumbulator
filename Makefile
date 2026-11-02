@@ -1,7 +1,7 @@
 ################
 # The Cosmos
 CC = cosmocc
-OPTFLAGS = -O2 -fomit-frame-pointer
+OPTFLAGS = -O3 -fomit-frame-pointer
 LDFLAGS =
 ################
 # UN*X
