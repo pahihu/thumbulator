@@ -13,10 +13,16 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
+#ifndef INADDR_ANY
+#define INADDR_ANY  0
+#endif
+
 #ifndef HAVE_X11
 #define HAVE_X11	0
+#endif
+#if HAVE_X11
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #endif
 
 unsigned int read32 ( unsigned int );
@@ -978,167 +984,59 @@ if(output_vcd)
 
 
     instructions++;
-
-    //ADC
-    if((inst&0xFFC0)==0x4140)
+switch(inst&0xF000){
+case 0x0000:
+    //LSL(1)
+    if((inst&0xF800)==0x0000)
     {
         rd=(inst>>0)&0x07;
         rm=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"adc   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra+rb;
-        if(cpsr&CPSR_C) rc++;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        if(cpsr&CPSR_C) { do_cflag(ra,rb,1); do_vflag(ra,rb,1); }
-        else            { do_cflag(ra,rb,0); do_vflag(ra,rb,0); }
-        goto Return;
-    }
-
-    //ADD(1) small immediate two registers
-    if((inst&0xFE00)==0x1C00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rb=(inst>>6)&0x7;
-        if(rb)
+        rb=(inst>>6)&0x1F;
+if(DISS) fprintf(stderr,"lsls  r%u,r%u,#0x%X",rd,rm,rb);
+        rc=read_register(rm);
+        if(rb==0)
         {
-if(DISS) fprintf(stderr,"adds  r%u,r%u,#0x%X",rd,rn,rb);
-            ra=read_register(rn);
-            rc=ra+rb;
-//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
-            write_register(rd,rc);
-            do_nflag(rc);
-            do_zflag(rc);
-            do_cflag(ra,rb,0);
-            do_vflag(ra,rb,0);
-            goto Return;
+            //if immed_5 == 0
+            //C unnaffected
+            //result not shifted
         }
         else
         {
-            //this is a mov
+            //else immed_5 > 0
+            do_cflag_bit(rc&(1<<(32-rb)));
+            rc<<=rb;
         }
-    }
-
-    //ADD(2) big immediate one register
-    if((inst&0xF800)==0x3000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-if(DISS) fprintf(stderr,"adds  r%u,#0x%02X",rd,rb);
-        ra=read_register(rd);
-        rc=ra+rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
         goto Return;
     }
 
-    //ADD(3) three registers
-    if((inst&0xFE00)==0x1800)
+    //LSR(1) two register immediate
+    if((inst&0xF800)==0x0800)
     {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"adds  r%u,r%u,r%u",rd,rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra+rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
-        goto Return;
-    }
-
-    //ADD(4) two registers one or both high no flags
-    if((inst&0xFF00)==0x4400)
-    {
-        if((inst>>6)&3)
+        rd=(inst>>0)&0x07;
+        rm=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+if(DISS) fprintf(stderr,"lsrs  r%u,r%u,#0x%X",rd,rm,rb);
+        rc=read_register(rm);
+        if(rb==0)
         {
-            //UNPREDICTABLE
+            do_cflag_bit(rc&0x80000000);
+            rc=0;
         }
-        rd=(inst>>0)&0x7;
-        rd|=(inst>>4)&0x8;
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra+rb;
-        if(rd==15)
+        else
         {
-            if((rc&1)==0)
-            {
-                //ATfE 22.1.0 generates code which triggers this
-                if(DBUGPC)fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
-            //    exit(1);
-            }
-            rc&=~1; //write_register may do this as well
-            rc+=2; //The program counter is special
-            clks += 2;
+            do_cflag_bit(rc&(1<<(rb-1)));
+            rc>>=rb;
         }
-//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //ADD(5) rd = pc plus immediate
-    if((inst&0xF800)==0xA000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,pc,#0x%02X",rd,rb);
-        ra=read_register(15);
-        rc=(ra&(~3))+rb;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //ADD(6) rd = sp plus immediate
-    if((inst&0xF800)==0xA800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,sp,#0x%02X",rd,rb);
-        ra=read_register(13);
-        rc=ra+rb;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //ADD(7) sp plus immediate
-    if((inst&0xFF80)==0xB000)
-    {
-        rb=(inst>>0)&0x7F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   sp,#0x%02X",rb);
-        ra=read_register(13);
-        rc=ra+rb;
-        write_register(13,rc);
-        goto Return;
-    }
-
-    //AND
-    if((inst&0xFFC0)==0x4000)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"ands  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra&rb;
         write_register(rd,rc);
         do_nflag(rc);
         do_zflag(rc);
         goto Return;
     }
+    goto ErrOut;
+case 0x1000:
 
     //ASR(1) two register immediate
     if((inst&0xF800)==0x1000)
@@ -1170,6 +1068,263 @@ if(DISS) fprintf(stderr,"asrs  r%u,r%u,#0x%X",rd,rm,rb);
             {
                 rc|=(MINUS_ONE)<<(32-rb);
             }
+        }
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //--- FE00 ---
+    //ADD(3) three registers
+    if((inst&0xFE00)==0x1800)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"adds  r%u,r%u,r%u",rd,rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra+rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,rb,0);
+        do_vflag(ra,rb,0);
+        goto Return;
+    }
+
+    //SUB(3)
+    if((inst&0xFE00)==0x1A00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra-rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+
+    //ADD(1) small immediate two registers
+    if((inst&0xFE00)==0x1C00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rb=(inst>>6)&0x7;
+        if(rb)
+        {
+if(DISS) fprintf(stderr,"adds  r%u,r%u,#0x%X",rd,rn,rb);
+            ra=read_register(rn);
+            rc=ra+rb;
+//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
+            write_register(rd,rc);
+            do_nflag(rc);
+            do_zflag(rc);
+            do_cflag(ra,rb,0);
+            do_vflag(ra,rb,0);
+            goto Return;
+        }
+        else
+        {
+            //this is a mov
+        }
+    }
+
+    //MOV(2) two low registers
+    if((inst&0xFFC0)==0x1C00)
+    {
+        rd=(inst>>0)&7;
+        rn=(inst>>3)&7;
+if(DISS) fprintf(stderr,"movs  r%u,r%u",rd,rn);
+        rc=read_register(rn);
+//fprintf(stderr,"0x%08X\n",rc);
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag_bit(0);
+        do_vflag_bit(0);
+        goto Return;
+    }
+
+    //SUB(1)
+    if((inst&0xFE00)==0x1E00)
+    {
+        rd=(inst>>0)&7;
+        rn=(inst>>3)&7;
+        rb=(inst>>6)&7;
+if(DISS) fprintf(stderr,"subs  r%u,r%u,#0x%X",rd,rn,rb);
+        ra=read_register(rn);
+        rc=ra-rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+    goto ErrOut;
+case 0x2000:
+
+    //MOV(1) immediate
+    if((inst&0xF800)==0x2000)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x07;
+if(DISS) fprintf(stderr,"movs  r%u,#0x%02X",rd,rb);
+        write_register(rd,rb);
+        do_nflag(rb);
+        do_zflag(rb);
+        goto Return;
+    }
+
+    //CMP(1) compare immediate
+    if((inst&0xF800)==0x2800)
+    {
+        rb=(inst>>0)&0xFF;
+        rn=(inst>>8)&0x07;
+if(DISS) fprintf(stderr,"cmp   r%u,#0x%02X",rn,rb);
+        ra=read_register(rn);
+        rc=ra-rb;
+//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+    goto ErrOut;
+case 0x3000:
+
+    //ADD(2) big immediate one register
+    if((inst&0xF800)==0x3000)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x7;
+if(DISS) fprintf(stderr,"adds  r%u,#0x%02X",rd,rb);
+        ra=read_register(rd);
+        rc=ra+rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,rb,0);
+        do_vflag(ra,rb,0);
+        goto Return;
+    }
+
+    //SUB(2)
+    if((inst&0xF800)==0x3800)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x07;
+if(DISS) fprintf(stderr,"subs  r%u,#0x%02X",rd,rb);
+        ra=read_register(rd);
+        rc=ra-rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+    goto ErrOut;
+case 0x4000:
+
+    //AND
+    if((inst&0xFFC0)==0x4000)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"ands  r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra&rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //EOR
+    if((inst&0xFFC0)==0x4040)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"eors  r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra^rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //LSL(2) two register
+    if((inst&0xFFC0)==0x4080)
+    {
+        rd=(inst>>0)&0x07;
+        rs=(inst>>3)&0x07;
+if(DISS) fprintf(stderr,"lsls  r%u,r%u",rd,rs);
+        rc=read_register(rd);
+        rb=read_register(rs);
+        rb&=0xFF;
+        if(rb==0)
+        {
+        }
+        else if(rb<32)
+        {
+            do_cflag_bit(rc&(1<<(32-rb)));
+            rc<<=rb;
+        }
+        else if(rb==32)
+        {
+            do_cflag_bit(rc&1);
+            rc=0;
+        }
+        else
+        {
+            do_cflag_bit(0);
+            rc=0;
+        }
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //LSR(2) two register
+    if((inst&0xFFC0)==0x40C0)
+    {
+        rd=(inst>>0)&0x07;
+        rs=(inst>>3)&0x07;
+if(DISS) fprintf(stderr,"lsrs  r%u,r%u",rd,rs);
+        rc=read_register(rd);
+        rb=read_register(rs);
+        rb&=0xFF;
+        if(rb==0)
+        {
+        }
+        else if(rb<32)
+        {
+            do_cflag_bit(rc&(1<<(rb-1)));
+            rc>>=rb;
+        }
+        else if(rb==32)
+        {
+            do_cflag_bit(rc&0x80000000);
+            rc=0;
+        }
+        else
+        {
+            do_cflag_bit(0);
+            rc=0;
         }
         write_register(rd,rc);
         do_nflag(rc);
@@ -1218,6 +1373,1019 @@ if(DISS) fprintf(stderr,"asrs  r%u,r%u",rd,rs);
         goto Return;
     }
 
+    //ADC
+    if((inst&0xFFC0)==0x4140)
+    {
+        rd=(inst>>0)&0x07;
+        rm=(inst>>3)&0x07;
+if(DISS) fprintf(stderr,"adc   r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra+rb;
+        if(cpsr&CPSR_C) rc++;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        if(cpsr&CPSR_C) { do_cflag(ra,rb,1); do_vflag(ra,rb,1); }
+        else            { do_cflag(ra,rb,0); do_vflag(ra,rb,0); }
+        goto Return;
+    }
+
+    //SBC
+    if((inst&0xFFC0)==0x4180)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"sbc   r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra-rb;
+        if(!(cpsr&CPSR_C)) rc--;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        if(cpsr&CPSR_C)
+        {
+            do_cflag(ra,~rb,1);
+            do_vflag(ra,~rb,1);
+        }
+        else
+        {
+            do_cflag(ra,~rb,0);
+            do_vflag(ra,~rb,0);
+        }
+        goto Return;
+    }
+
+    //ROR
+    if((inst&0xFFC0)==0x41C0)
+    {
+        rd=(inst>>0)&0x7;
+        rs=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"rors  r%u,r%u",rd,rs);
+        rc=read_register(rd);
+        ra=read_register(rs);
+        ra&=0xFF;
+        if(ra==0)
+        {
+        }
+        else
+        {
+            ra&=0x1F;
+            if(ra==0)
+            {
+                do_cflag_bit(rc&0x80000000);
+            }
+            else
+            {
+                do_cflag_bit(rc&(1<<(ra-1)));
+                rb=rc<<(32-ra);
+                rc>>=ra;
+                rc|=rb;
+            }
+        }
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //TST
+    if((inst&0xFFC0)==0x4200)
+    {
+        rn=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra&rb;
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //NEG
+    if((inst&0xFFC0)==0x4240)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"negs  r%u,r%u",rd,rm);
+        ra=read_register(rm);
+        rc=0-ra;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(0,~ra,1);
+        do_vflag(0,~ra,1);
+        goto Return;
+    }
+
+    //CMP(2) compare register
+    if((inst&0xFFC0)==0x4280)
+    {
+        rn=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra-rb;
+//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+
+    //CMN
+    if((inst&0xFFC0)==0x42C0)
+    {
+        rn=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"cmns  r%u,r%u",rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra+rb;
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,rb,0);
+        do_vflag(ra,rb,0);
+        goto Return;
+    }
+
+    //ORR
+    if((inst&0xFFC0)==0x4300)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"orrs  r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra|rb;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //MUL
+    if((inst&0xFFC0)==0x4340)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra*rb; clks += 31;
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //BIC
+    if((inst&0xFFC0)==0x4380)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra&(~rb);
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //MVN
+    if((inst&0xFFC0)==0x43C0)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"mvns  r%u,r%u",rd,rm);
+        ra=read_register(rm);
+        rc=(~ra);
+        write_register(rd,rc);
+        do_nflag(rc);
+        do_zflag(rc);
+        goto Return;
+    }
+
+    //--- FF00 ---
+    //ADD(4) two registers one or both high no flags
+    if((inst&0xFF00)==0x4400)
+    {
+        if((inst>>6)&3)
+        {
+            //UNPREDICTABLE
+        }
+        rd=(inst>>0)&0x7;
+        rd|=(inst>>4)&0x8;
+        rm=(inst>>3)&0xF;
+if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
+        ra=read_register(rd);
+        rb=read_register(rm);
+        rc=ra+rb;
+        if(rd==15)
+        {
+            if((rc&1)==0)
+            {
+                //ATfE 22.1.0 generates code which triggers this
+                if(DBUGPC)fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
+            //    exit(1);
+            }
+            rc&=~1; //write_register may do this as well
+            rc+=2; //The program counter is special
+            clks += 2;
+        }
+//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //CMP(3) compare high register
+    if((inst&0xFF00)==0x4500)
+    {
+        if(((inst>>6)&3)==0x0)
+        {
+            //UNPREDICTABLE
+        }
+        rn=(inst>>0)&0x7;
+        rn|=(inst>>4)&0x8;
+        if(rn==0xF)
+        {
+            //UNPREDICTABLE
+        }
+        rm=(inst>>3)&0xF;
+if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
+        ra=read_register(rn);
+        rb=read_register(rm);
+        rc=ra-rb;
+        do_nflag(rc);
+        do_zflag(rc);
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+        goto Return;
+    }
+
+    //MOV(3)
+    if((inst&0xFF00)==0x4600)
+    {
+        rd=(inst>>0)&0x7;
+        rd|=(inst>>4)&0x8;
+        rm=(inst>>3)&0xF;
+if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
+        rc=read_register(rm);
+        if((rd==14)&&(rm==15))
+        {
+            //printf("mov lr,pc warning 0x%08X\n",pc-2);
+            //rc|=1;
+        }
+        if(rd==15)
+        {
+            //if((rc&1)==0)
+            //{
+                //fprintf(stderr,"cpy or mov pc,... produced an ARM address 0x%08X 0x%08X\n",pc,rc);
+                //exit(1);
+            //}
+            rc&=~1; //write_register may do this as well
+            rc+=2; //The program counter is special
+            clks++;
+        }
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //CPY copy high register
+    if((inst&0xFFC0)==0x4600)
+    {
+        //same as mov except you can use both low registers
+        //going to let mov handle high registers
+        rd=(inst>>0)&0x7; //mov handles the high registers
+        rm=(inst>>3)&0x7; //mov handles the high registers
+if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
+        rc=read_register(rm);
+        //if(rd==15) //mov handles the high registers like r15
+        //{
+            //rc&=~1;
+            //rc+=2; //The program counter is special
+        //}
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //BX
+    if((inst&0xFF87)==0x4700)
+    {
+        rm=(inst>>3)&0xF;
+if(DISS) fprintf(stderr,"bx    r%u",rm);
+        rc=read_register(rm);
+        rc+=2; clks++;
+//fprintf(stderr,"bx r%u 0x%X 0x%X\n",rm,rc,pc);
+        if(rc&1)
+        {
+            rc&=~1;
+            write_register(15,rc);
+            goto Return;
+        }
+        else
+        {
+            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
+            return(1);
+        }
+    }
+
+    //BLX(2)
+    if((inst&0xFF87)==0x4780)
+    {
+        rm=(inst>>3)&0xF;
+if(DISS) fprintf(stderr,"blx   r%u",rm);
+        rc=read_register(rm);
+//fprintf(stderr,"blx r%u 0x%X 0x%X\n",rm,rc,pc);
+        rc+=2; clks++;
+        if(rc&1)
+        {
+            write_register(14,(pc-2)|1);
+            rc&=~1;
+            write_register(15,rc);
+            goto Return;
+        }
+        else
+        {
+            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
+            return(1);
+        }
+    }
+
+    //LDR(3)
+    if((inst&0xF800)==0x4800)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x07;
+        rb<<=2;
+if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
+        ra=read_register(15);
+        ra&=~3;
+        rb+=ra;
+if(DISS) fprintf(stderr,";@ 0x%X",rb);
+        rc=read32(rb); clks++;
+        write_register(rd,rc);
+        goto Return;
+    }
+goto ErrOut;
+case 0x5000:
+
+    //STR(2)
+    if((inst&0xFE00)==0x5000)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read_register(rd);
+        write32(rb,rc); clks++;
+        goto Return;
+    }
+
+    //STRH(2)
+    if((inst&0xFE00)==0x5200)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read_register(rd);
+        write16(rb,rc&0xFFFF); clks++;
+        goto Return;
+    }
+
+    //STRB(2)
+    if((inst&0xFE00)==0x5400)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read_register(rd);
+        ra=read16(rb&(~1)); clks++;
+        if(rb&1)
+        {
+            ra&=0x00FF;
+            ra|=rc<<8;
+        }
+        else
+        {
+            ra&=0xFF00;
+            ra|=rc&0x00FF;
+        }
+        write16(rb&(~1),ra&0xFFFF); clks++;
+        goto Return;
+    }
+
+    //LDRSB
+    if((inst&0xFE00)==0x5600)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read16(rb&(~1)); clks++;
+        if(rb&1)
+        {
+            rc>>=8;
+        }
+        else
+        {
+        }
+        rc&=0xFF;
+        if(rc&0x80) rc|=((MINUS_ONE)<<8);
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //LDR(2) three register
+    if((inst&0xFE00)==0x5800)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read32(rb); clks++;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //LDRH(2)
+    if((inst&0xFE00)==0x5A00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read16(rb); clks++;
+        write_register(rd,rc&0xFFFF);
+        goto Return;
+    }
+
+    //LDRB(2)
+    if((inst&0xFE00)==0x5C00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read16(rb&(~1)); clks++;
+        if(rb&1)
+        {
+            rc>>=8;
+        }
+        else
+        {
+        }
+        write_register(rd,rc&0xFF);
+        goto Return;
+    }
+
+    //LDRSH
+    if((inst&0xFE00)==0x5E00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+        rm=(inst>>6)&0x7;
+if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
+        rb=read_register(rn)+read_register(rm);
+        rc=read16(rb); clks++;
+        rc&=0xFFFF;
+        if(rc&0x8000) rc|=((MINUS_ONE)<<16);
+        write_register(rd,rc);
+        goto Return;
+    }
+goto ErrOut;
+case 0x6000:
+
+    //STR(1)
+    if((inst&0xF800)==0x6000)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+        rb<<=2;
+if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read_register(rd);
+        write32(rb,rc); clks++;
+        goto Return;
+    }
+
+    //LDR(1) two register immediate
+    if((inst&0xF800)==0x6800)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+        rb<<=2;
+if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read32(rb); clks++;
+        write_register(rd,rc);
+        goto Return;
+    }
+goto ErrOut;
+case 0x7000:
+
+    //STRB(1)
+    if((inst&0xF800)==0x7000)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read_register(rd);
+        ra=read16(rb&(~1)); clks++;
+        if(rb&1)
+        {
+            ra&=0x00FF;
+            ra|=rc<<8;
+        }
+        else
+        {
+            ra&=0xFF00;
+            ra|=rc&0x00FF;
+        }
+        write16(rb&(~1),ra&0xFFFF); clks++;
+        goto Return;
+    }
+
+    //LDRB(1)
+    if((inst&0xF800)==0x7800)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read16(rb&(~1)); clks++;
+        if(rb&1)
+        {
+            rc>>=8;
+        }
+        else
+        {
+        }
+        write_register(rd,rc&0xFF);
+        goto Return;
+    }
+
+    //UDF
+    if((inst&0xFF00)==0x7E00)
+    {
+        rb=(inst>>0)&0xFF;
+if(DISS) fprintf(stderr,"udf   #%u",rb);
+        goto Return;
+    }
+goto ErrOut;
+case 0x8000:
+
+    //STRH(1)
+    if((inst&0xF800)==0x8000)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+        rb<<=1;
+if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read_register(rd);
+        write16(rb,rc&0xFFFF); clks++;
+        goto Return;
+    }
+
+    //LDRH(1)
+    if((inst&0xF800)==0x8800)
+    {
+        rd=(inst>>0)&0x07;
+        rn=(inst>>3)&0x07;
+        rb=(inst>>6)&0x1F;
+        rb<<=1;
+if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
+        rb=read_register(rn)+rb;
+        rc=read16(rb); clks++;
+        write_register(rd,rc&0xFFFF);
+        goto Return;
+    }
+goto ErrOut;
+case 0x9000:
+
+    //STR(3)
+    if((inst&0xF800)==0x9000)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x07;
+        rb<<=2;
+if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
+        rb=read_register(13)+rb;
+//fprintf(stderr,"0x%08X\n",rb);
+        rc=read_register(rd);
+        write32(rb,rc); clks++;
+        goto Return;
+    }
+
+    //LDR(4)
+    if((inst&0xF800)==0x9800)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x07;
+        rb<<=2;
+if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
+        ra=read_register(13);
+        //ra&=~3;
+        rb+=ra;
+        rc=read32(rb); clks++;
+        write_register(rd,rc);
+        goto Return;
+    }
+goto ErrOut;
+case 0xA000:
+
+    //ADD(5) rd = pc plus immediate
+    if((inst&0xF800)==0xA000)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x7;
+        rb<<=2;
+if(DISS) fprintf(stderr,"add   r%u,pc,#0x%02X",rd,rb);
+        ra=read_register(15);
+        rc=(ra&(~3))+rb;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //ADD(6) rd = sp plus immediate
+    if((inst&0xF800)==0xA800)
+    {
+        rb=(inst>>0)&0xFF;
+        rd=(inst>>8)&0x7;
+        rb<<=2;
+if(DISS) fprintf(stderr,"add   r%u,sp,#0x%02X",rd,rb);
+        ra=read_register(13);
+        rc=ra+rb;
+        write_register(rd,rc);
+        goto Return;
+    }
+goto ErrOut;
+case 0xB000:
+
+    //--- FF80 ---
+    //ADD(7) sp plus immediate
+    if((inst&0xFF80)==0xB000)
+    {
+        rb=(inst>>0)&0x7F;
+        rb<<=2;
+if(DISS) fprintf(stderr,"add   sp,#0x%02X",rb);
+        ra=read_register(13);
+        rc=ra+rb;
+        write_register(13,rc);
+        goto Return;
+    }
+
+    //SUB(4)
+    if((inst&0xFF80)==0xB080)
+    {
+        rb=inst&0x7F;
+        rb<<=2;
+if(DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
+        ra=read_register(13);
+        ra-=rb;
+        write_register(13,ra);
+        goto Return;
+    }
+
+    //UXTH
+    if((inst&0xFFC0)==0xB280)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
+        ra=read_register(rm);
+        rc=ra&0xFFFF;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //UXTB
+    if((inst&0xFFC0)==0xB2C0)
+    {
+        rd=(inst>>0)&0x7;
+        rm=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"uxtb  r%u,r%u",rd,rm);
+        ra=read_register(rm);
+        rc=ra&0xFF;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //PUSH
+    if((inst&0xFE00)==0xB400)
+    {
+
+if(DISS)
+{
+    fprintf(stderr,"push  {");
+    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(inst&rb)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"r%u",ra);
+            rc++;
+        }
+    }
+    if(inst&0x100)
+    {
+        if(rc) fprintf(stderr,",");
+        fprintf(stderr,"lr");
+    }
+    fprintf(stderr,"}");
+}
+
+        sp=read_register(13);
+//fprintf(stderr,"sp 0x%08X\n",sp);
+        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(inst&rb)
+            {
+                rc++;
+            }
+        }
+        if(inst&0x100) rc++;
+        rc<<=2;
+        sp-=rc;
+        rd=sp;
+        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(inst&rb)
+            {
+                write32(rd,read_register(ra)); clks++;
+                rd+=4;
+            }
+        }
+        if(inst&0x100)
+        {
+            rc=read_register(14);
+            write32(rd,rc); //read_register(14));
+
+            if((rc&1)==0)
+            {
+                if(DBUGSTACK)fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
+//                exit(1);
+            }
+
+
+        }
+        write_register(13,sp);
+        goto Return;
+    }
+
+    //SETEND
+    if((inst&0xFFF7)==0xB650)
+    {
+        fprintf(stderr,"setend not implemented\n");
+        return(1);
+    }
+
+    //CPS
+    if((inst&0xFFE8)==0xB660)
+    {
+if(DISS) fprintf(stderr,"cps   TODO\n");
+        return(1);
+    }
+
+    //REV
+    if((inst&0xFFC0)==0xBA00)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"rev   r%u,r%u",rd,rn);
+        ra=read_register(rn);
+        rc =((ra>> 0)&0xFF)<<24;
+        rc|=((ra>> 8)&0xFF)<<16;
+        rc|=((ra>>16)&0xFF)<< 8;
+        rc|=((ra>>24)&0xFF)<< 0;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //REV16
+    if((inst&0xFFC0)==0xBA40)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"rev16 r%u,r%u",rd,rn);
+        ra=read_register(rn);
+        rc =((ra>> 0)&0xFF)<< 8;
+        rc|=((ra>> 8)&0xFF)<< 0;
+        rc|=((ra>>16)&0xFF)<<24;
+        rc|=((ra>>24)&0xFF)<<16;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //REVSH
+    if((inst&0xFFC0)==0xBAC0)
+    {
+        rd=(inst>>0)&0x7;
+        rn=(inst>>3)&0x7;
+if(DISS) fprintf(stderr,"revsh r%u,r%u",rd,rn);
+        ra=read_register(rn);
+        rc =((ra>> 0)&0xFF)<< 8;
+        rc|=((ra>> 8)&0xFF)<< 0;
+        if(rc&0x8000) rc|=0xFFFF0000;
+        else          rc&=0x0000FFFF;
+        write_register(rd,rc);
+        goto Return;
+    }
+
+    //POP
+    if((inst&0xFE00)==0xBC00)
+    {
+if(DISS)
+{
+    fprintf(stderr,"pop   {");
+    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(inst&rb)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"r%u",ra);
+            rc++;
+        }
+    }
+    if(inst&0x100)
+    {
+        if(rc) fprintf(stderr,",");
+        fprintf(stderr,"pc");
+    }
+    fprintf(stderr,"}");
+}
+
+        sp=read_register(13);
+        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(inst&rb)
+            {
+                write_register(ra,read32(sp)); clks++;
+                sp+=4;
+            }
+        }
+        if(inst&0x100)
+        {
+            rc=read32(sp); clks += 2;
+            if((rc&1)==0)
+            {
+                if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
+                //exit(1);
+                rc&=~1;
+            }
+            rc+=2;
+            write_register(15,rc);
+            sp+=4;
+        }
+        write_register(13,sp);
+        goto Return;
+    }
+
+    //BKPT
+    if((inst&0xFF00)==0xBE00)
+    {
+        rb=(inst>>0)&0xFF;
+        // fprintf(stderr,"bkpt 0x%02X\n",rb);
+        // return(1);
+        clks += 2;
+        return(handle_bkpt(rb, read32(read_register(13))));
+    }
+
+    //HINT
+    if((inst&0xFF00)==0xBF00)
+    {
+        rd=(inst>>0)&0xF;
+        rm=(inst>>4)&0xF;
+        //NOP
+        if((rm==0x0)&&(rd=0x0))
+        {
+if(DISS) fprintf(stderr,"nop");
+            goto Return;
+        }
+        //YIELD
+        if((rm==0x1)&&(rd==0x0))
+        {
+if(DISS) fprintf(stderr,"yield");
+            goto Return;
+        }
+        //WFE
+        if((rm==0x2)&&(rd==0x0))
+        {
+            clks++;
+            if(reg_event)reg_event=0;
+            else waiting=WaitForEvt;
+if(DISS) fprintf(stderr,"wfe");
+            goto Return;
+        }
+        //WFI
+        if((rm==0x3)&&(rd==0x0))
+        {
+            clks++;
+            waiting=WaitForInt;
+if(DISS) fprintf(stderr,"wfi");
+            goto Return;
+        }
+        //SEV
+        if((rm==0x4)&&(rd==0x0))
+        {
+            reg_event=1;
+            if(WaitForEvt==waiting)waiting=NoWait;
+if(DISS) fprintf(stderr,"sev");
+            goto Return;
+        }
+    }
+goto ErrOut;
+case 0xC000:
+
+    //STMIA
+    if((inst&0xF800)==0xC000)
+    {
+        rn=(inst>>8)&0x7;
+
+if(DISS)
+{
+    fprintf(stderr,"stmia r%u!,{",rn);
+    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(inst&rb)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"r%u",ra);
+            rc++;
+        }
+    }
+    fprintf(stderr,"}");
+}
+        sp=read_register(rn);
+        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(inst&rb)
+            {
+                write32(sp,read_register(ra)); clks++;
+                sp+=4;
+            }
+        }
+        write_register(rn,sp);
+        goto Return;
+    }
+
+    //LDMIA
+    if((inst&0xF800)==0xC800)
+    {
+        rn=(inst>>8)&0x7;
+if(DISS)
+{
+    fprintf(stderr,"ldmia  r%u!,{",rn);
+    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(inst&rb)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"r%u",ra);
+            rc++;
+        }
+    }
+    fprintf(stderr,"}");
+}
+        sp=read_register(rn);
+        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(inst&rb)
+            {
+                write_register(ra,read32(sp)); clks++;
+                sp+=4;
+            }
+        }
+        //there is a write back exception.
+        if((inst&(1<<rn))==0) write_register(rn,sp);
+        goto Return;
+    }
+goto ErrOut;
+case 0xD000:
+
+    //--- F000 ---
     //B(1) conditional branch
     if((inst&0xF000)==0xD000)
     {
@@ -1366,6 +2534,26 @@ if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
         }
     }
 
+    //SWI
+    if((inst&0xFF00)==0xDF00)
+    {
+        rb=inst&0xFF;
+if(DISS) fprintf(stderr,"swi   0x%02X",rb);
+
+        if((inst&0xFF)==0xCC)
+        {
+            write_register(0,cpsr);
+            goto Return;
+        }
+        else
+        {
+            fprintf(stderr,"\n\nswi 0x%02X\n",rb);
+            return(1);
+        }
+    }
+goto ErrOut;
+case 0xE000:
+
     //B(2) unconditional branch
     if((inst&0xF800)==0xE000)
     {
@@ -1378,31 +2566,53 @@ if(DISS) fprintf(stderr,"b     0x%08X",rb-4);
         write_register(15,rb); clks++;
         goto Return;
     }
-
-    //BIC
-    if((inst&0xFFC0)==0x4380)
+    //BL/BLX(1)
+    if((inst&0xE000)==0xE000) //BL,BLX
     {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra&(~rb);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
+        if((inst&0x1800)==0x1000) //H=b10
+        {
+if(DISS) fprintf(stderr,"\n");
+            rb=inst&((1<<11)-1);
+            if(rb&1<<10) rb|=(~((1<<11)-1)); //sign extend
+            rb<<=12;
+            rb+=pc;
+            write_register(14,rb); clks++;
+            return(0);
+        }
+        else
+        if((inst&0x1800)==0x1800) //H=b11
+        {
+            //branch to thumb
+            rb=read_register(14);
+            rb+=(inst&((1<<11)-1))<<1;;
+            rb+=2;
 
-    //BKPT
-    if((inst&0xFF00)==0xBE00)
-    {
-        rb=(inst>>0)&0xFF;
-        // fprintf(stderr,"bkpt 0x%02X\n",rb);
-        // return(1);
-        clks += 2;
-        return(handle_bkpt(rb, read32(read_register(13))));
+if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
+            write_register(14,(pc-2)|1); clks++;
+            write_register(15,rb); clks++;
+            goto Return;
+        }
+        else
+        if((inst&0x1800)==0x0800) //H=b01
+        {
+            //fprintf(stderr,"cannot branch to arm 0x%08X 0x%04X\n",pc,inst);
+            //return(1);
+            //branch to thumb
+            rb=read_register(14);
+            rb+=(inst&((1<<11)-1))<<1;;
+            rb&=0xFFFFFFFC;
+            rb+=2;
+
+printf("hello\n");
+
+if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
+            write_register(14,(pc-2)|1); clks++;
+            write_register(15,rb); clks++;
+            goto Return;
+        }
     }
+goto ErrOut;
+case 0xF000:
 
     //BL/BLX(1)
     if((inst&0xE000)==0xE000) //BL,BLX
@@ -1447,152 +2657,7 @@ if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
             write_register(14,(pc-2)|1); clks++;
             write_register(15,rb); clks++;
             goto Return;
-
-
-
         }
-    }
-
-    //BLX(2)
-    if((inst&0xFF87)==0x4780)
-    {
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"blx   r%u",rm);
-        rc=read_register(rm);
-//fprintf(stderr,"blx r%u 0x%X 0x%X\n",rm,rc,pc);
-        rc+=2; clks++;
-        if(rc&1)
-        {
-            write_register(14,(pc-2)|1);
-            rc&=~1;
-            write_register(15,rc);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            return(1);
-        }
-    }
-
-    //BX
-    if((inst&0xFF87)==0x4700)
-    {
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"bx    r%u",rm);
-        rc=read_register(rm);
-        rc+=2; clks++;
-//fprintf(stderr,"bx r%u 0x%X 0x%X\n",rm,rc,pc);
-        if(rc&1)
-        {
-            rc&=~1;
-            write_register(15,rc);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            return(1);
-        }
-    }
-
-    //CMN
-    if((inst&0xFFC0)==0x42C0)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmns  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra+rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
-        goto Return;
-    }
-
-    //CMP(1) compare immediate
-    if((inst&0xF800)==0x2800)
-    {
-        rb=(inst>>0)&0xFF;
-        rn=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"cmp   r%u,#0x%02X",rn,rb);
-        ra=read_register(rn);
-        rc=ra-rb;
-//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //CMP(2) compare register
-    if((inst&0xFFC0)==0x4280)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //CMP(3) compare high register
-    if((inst&0xFF00)==0x4500)
-    {
-        if(((inst>>6)&3)==0x0)
-        {
-            //UNPREDICTABLE
-        }
-        rn=(inst>>0)&0x7;
-        rn|=(inst>>4)&0x8;
-        if(rn==0xF)
-        {
-            //UNPREDICTABLE
-        }
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //CPS
-    if((inst&0xFFE8)==0xB660)
-    {
-if(DISS) fprintf(stderr,"cps   TODO\n");
-        return(1);
-    }
-
-    //CPY copy high register
-    if((inst&0xFFC0)==0x4600)
-    {
-        //same as mov except you can use both low registers
-        //going to let mov handle high registers
-        rd=(inst>>0)&0x7; //mov handles the high registers
-        rm=(inst>>3)&0x7; //mov handles the high registers
-if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
-        rc=read_register(rm);
-        //if(rd==15) //mov handles the high registers like r15
-        //{
-            //rc&=~1;
-            //rc+=2; //The program counter is special
-        //}
-        write_register(rd,rc);
-        goto Return;
     }
 
     //111100111011....
@@ -1627,1016 +2692,9 @@ if(DISS) fprintf(stderr,"isb   %u",rb);
             goto Return;
         }
     }
+} /* SWITCH END */
 
-    //EOR
-    if((inst&0xFFC0)==0x4040)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"eors  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra^rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LDMIA
-    if((inst&0xF800)==0xC800)
-    {
-        rn=(inst>>8)&0x7;
-if(DISS)
-{
-    fprintf(stderr,"ldmia  r%u!,{",rn);
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    fprintf(stderr,"}");
-}
-        sp=read_register(rn);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write_register(ra,read32(sp)); clks++;
-                sp+=4;
-            }
-        }
-        //there is a write back exception.
-        if((inst&(1<<rn))==0) write_register(rn,sp);
-        goto Return;
-    }
-
-    //LDR(1) two register immediate
-    if((inst&0xF800)==0x6800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDR(2) three register
-    if((inst&0xFE00)==0x5800)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDR(3)
-    if((inst&0xF800)==0x4800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
-        ra=read_register(15);
-        ra&=~3;
-        rb+=ra;
-if(DISS) fprintf(stderr,";@ 0x%X",rb);
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDR(4)
-    if((inst&0xF800)==0x9800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
-        ra=read_register(13);
-        //ra&=~3;
-        rb+=ra;
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDRB(1)
-    if((inst&0xF800)==0x7800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        write_register(rd,rc&0xFF);
-        goto Return;
-    }
-
-    //LDRB(2)
-    if((inst&0xFE00)==0x5C00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        write_register(rd,rc&0xFF);
-        goto Return;
-    }
-
-    //LDRH(1)
-    if((inst&0xF800)==0x8800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=1;
-if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read16(rb); clks++;
-        write_register(rd,rc&0xFFFF);
-        goto Return;
-    }
-
-    //LDRH(2)
-    if((inst&0xFE00)==0x5A00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb); clks++;
-        write_register(rd,rc&0xFFFF);
-        goto Return;
-    }
-
-    //LDRSB
-    if((inst&0xFE00)==0x5600)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        rc&=0xFF;
-        if(rc&0x80) rc|=((MINUS_ONE)<<8);
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDRSH
-    if((inst&0xFE00)==0x5E00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb); clks++;
-        rc&=0xFFFF;
-        if(rc&0x8000) rc|=((MINUS_ONE)<<16);
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LSL(1)
-    if((inst&0xF800)==0x0000)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsls  r%u,r%u,#0x%X",rd,rm,rb);
-        rc=read_register(rm);
-        if(rb==0)
-        {
-            //if immed_5 == 0
-            //C unnaffected
-            //result not shifted
-        }
-        else
-        {
-            //else immed_5 > 0
-            do_cflag_bit(rc&(1<<(32-rb)));
-            rc<<=rb;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LSL(2) two register
-    if((inst&0xFFC0)==0x4080)
-    {
-        rd=(inst>>0)&0x07;
-        rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsls  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        rb=read_register(rs);
-        rb&=0xFF;
-        if(rb==0)
-        {
-        }
-        else if(rb<32)
-        {
-            do_cflag_bit(rc&(1<<(32-rb)));
-            rc<<=rb;
-        }
-        else if(rb==32)
-        {
-            do_cflag_bit(rc&1);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(0);
-            rc=0;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LSR(1) two register immediate
-    if((inst&0xF800)==0x0800)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsrs  r%u,r%u,#0x%X",rd,rm,rb);
-        rc=read_register(rm);
-        if(rb==0)
-        {
-            do_cflag_bit(rc&0x80000000);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            rc>>=rb;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LSR(2) two register
-    if((inst&0xFFC0)==0x40C0)
-    {
-        rd=(inst>>0)&0x07;
-        rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsrs  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        rb=read_register(rs);
-        rb&=0xFF;
-        if(rb==0)
-        {
-        }
-        else if(rb<32)
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            rc>>=rb;
-        }
-        else if(rb==32)
-        {
-            do_cflag_bit(rc&0x80000000);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(0);
-            rc=0;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //MOV(1) immediate
-    if((inst&0xF800)==0x2000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"movs  r%u,#0x%02X",rd,rb);
-        write_register(rd,rb);
-        do_nflag(rb);
-        do_zflag(rb);
-        goto Return;
-    }
-
-    //MOV(2) two low registers
-    if((inst&0xFFC0)==0x1C00)
-    {
-        rd=(inst>>0)&7;
-        rn=(inst>>3)&7;
-if(DISS) fprintf(stderr,"movs  r%u,r%u",rd,rn);
-        rc=read_register(rn);
-//fprintf(stderr,"0x%08X\n",rc);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag_bit(0);
-        do_vflag_bit(0);
-        goto Return;
-    }
-
-    //MOV(3)
-    if((inst&0xFF00)==0x4600)
-    {
-        rd=(inst>>0)&0x7;
-        rd|=(inst>>4)&0x8;
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
-        rc=read_register(rm);
-        if((rd==14)&&(rm==15))
-        {
-            //printf("mov lr,pc warning 0x%08X\n",pc-2);
-            //rc|=1;
-        }
-        if(rd==15)
-        {
-            //if((rc&1)==0)
-            //{
-                //fprintf(stderr,"cpy or mov pc,... produced an ARM address 0x%08X 0x%08X\n",pc,rc);
-                //exit(1);
-            //}
-            rc&=~1; //write_register may do this as well
-            rc+=2; //The program counter is special
-            clks++;
-        }
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //MUL
-    if((inst&0xFFC0)==0x4340)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra*rb; clks += 31;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //MVN
-    if((inst&0xFFC0)==0x43C0)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"mvns  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=(~ra);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //NEG
-    if((inst&0xFFC0)==0x4240)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"negs  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=0-ra;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(0,~ra,1);
-        do_vflag(0,~ra,1);
-        goto Return;
-    }
-
-    //ORR
-    if((inst&0xFFC0)==0x4300)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"orrs  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra|rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-
-    //POP
-    if((inst&0xFE00)==0xBC00)
-    {
-if(DISS)
-{
-    fprintf(stderr,"pop   {");
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    if(inst&0x100)
-    {
-        if(rc) fprintf(stderr,",");
-        fprintf(stderr,"pc");
-    }
-    fprintf(stderr,"}");
-}
-
-        sp=read_register(13);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write_register(ra,read32(sp)); clks++;
-                sp+=4;
-            }
-        }
-        if(inst&0x100)
-        {
-            rc=read32(sp); clks += 2;
-            if((rc&1)==0)
-            {
-                if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
-                //exit(1);
-                rc&=~1;
-            }
-            rc+=2;
-            write_register(15,rc);
-            sp+=4;
-        }
-        write_register(13,sp);
-        goto Return;
-    }
-
-    //PUSH
-    if((inst&0xFE00)==0xB400)
-    {
-
-if(DISS)
-{
-    fprintf(stderr,"push  {");
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    if(inst&0x100)
-    {
-        if(rc) fprintf(stderr,",");
-        fprintf(stderr,"lr");
-    }
-    fprintf(stderr,"}");
-}
-
-        sp=read_register(13);
-//fprintf(stderr,"sp 0x%08X\n",sp);
-        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                rc++;
-            }
-        }
-        if(inst&0x100) rc++;
-        rc<<=2;
-        sp-=rc;
-        rd=sp;
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write32(rd,read_register(ra)); clks++;
-                rd+=4;
-            }
-        }
-        if(inst&0x100)
-        {
-            rc=read_register(14);
-            write32(rd,rc); //read_register(14));
-
-            if((rc&1)==0)
-            {
-                if(DBUGSTACK)fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
-//                exit(1);
-            }
-
-
-        }
-        write_register(13,sp);
-        goto Return;
-    }
-
-    //REV
-    if((inst&0xFFC0)==0xBA00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev   r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<<24;
-        rc|=((ra>> 8)&0xFF)<<16;
-        rc|=((ra>>16)&0xFF)<< 8;
-        rc|=((ra>>24)&0xFF)<< 0;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //REV16
-    if((inst&0xFFC0)==0xBA40)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev16 r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<< 8;
-        rc|=((ra>> 8)&0xFF)<< 0;
-        rc|=((ra>>16)&0xFF)<<24;
-        rc|=((ra>>24)&0xFF)<<16;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //REVSH
-    if((inst&0xFFC0)==0xBAC0)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"revsh r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<< 8;
-        rc|=((ra>> 8)&0xFF)<< 0;
-        if(rc&0x8000) rc|=0xFFFF0000;
-        else          rc&=0x0000FFFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //ROR
-    if((inst&0xFFC0)==0x41C0)
-    {
-        rd=(inst>>0)&0x7;
-        rs=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rors  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        ra=read_register(rs);
-        ra&=0xFF;
-        if(ra==0)
-        {
-        }
-        else
-        {
-            ra&=0x1F;
-            if(ra==0)
-            {
-                do_cflag_bit(rc&0x80000000);
-            }
-            else
-            {
-                do_cflag_bit(rc&(1<<(ra-1)));
-                rb=rc<<(32-ra);
-                rc>>=ra;
-                rc|=rb;
-            }
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //SBC
-    if((inst&0xFFC0)==0x4180)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sbc   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra-rb;
-        if(!(cpsr&CPSR_C)) rc--;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        if(cpsr&CPSR_C)
-        {
-            do_cflag(ra,~rb,1);
-            do_vflag(ra,~rb,1);
-        }
-        else
-        {
-            do_cflag(ra,~rb,0);
-            do_vflag(ra,~rb,0);
-        }
-        goto Return;
-    }
-
-    //SETEND
-    if((inst&0xFFF7)==0xB650)
-    {
-        fprintf(stderr,"setend not implemented\n");
-        return(1);
-    }
-
-    //STMIA
-    if((inst&0xF800)==0xC000)
-    {
-        rn=(inst>>8)&0x7;
-
-if(DISS)
-{
-    fprintf(stderr,"stmia r%u!,{",rn);
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    fprintf(stderr,"}");
-}
-        sp=read_register(rn);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write32(sp,read_register(ra)); clks++;
-                sp+=4;
-            }
-        }
-        write_register(rn,sp);
-        goto Return;
-    }
-
-    //STR(1)
-    if((inst&0xF800)==0x6000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //STR(2)
-    if((inst&0xFE00)==0x5000)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //STR(3)
-    if((inst&0xF800)==0x9000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
-        rb=read_register(13)+rb;
-//fprintf(stderr,"0x%08X\n",rb);
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //STRB(1)
-    if((inst&0xF800)==0x7000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        ra=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            ra&=0x00FF;
-            ra|=rc<<8;
-        }
-        else
-        {
-            ra&=0xFF00;
-            ra|=rc&0x00FF;
-        }
-        write16(rb&(~1),ra&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //STRB(2)
-    if((inst&0xFE00)==0x5400)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        ra=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            ra&=0x00FF;
-            ra|=rc<<8;
-        }
-        else
-        {
-            ra&=0xFF00;
-            ra|=rc&0x00FF;
-        }
-        write16(rb&(~1),ra&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //STRH(1)
-    if((inst&0xF800)==0x8000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=1;
-if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        write16(rb,rc&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //STRH(2)
-    if((inst&0xFE00)==0x5200)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        write16(rb,rc&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //SUB(1)
-    if((inst&0xFE00)==0x1E00)
-    {
-        rd=(inst>>0)&7;
-        rn=(inst>>3)&7;
-        rb=(inst>>6)&7;
-if(DISS) fprintf(stderr,"subs  r%u,r%u,#0x%X",rd,rn,rb);
-        ra=read_register(rn);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //SUB(2)
-    if((inst&0xF800)==0x3800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"subs  r%u,#0x%02X",rd,rb);
-        ra=read_register(rd);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //SUB(3)
-    if((inst&0xFE00)==0x1A00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //SUB(4)
-    if((inst&0xFF80)==0xB080)
-    {
-        rb=inst&0x7F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
-        ra=read_register(13);
-        ra-=rb;
-        write_register(13,ra);
-        goto Return;
-    }
-
-    //SWI
-    if((inst&0xFF00)==0xDF00)
-    {
-        rb=inst&0xFF;
-if(DISS) fprintf(stderr,"swi   0x%02X",rb);
-
-        if((inst&0xFF)==0xCC)
-        {
-            write_register(0,cpsr);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\n\nswi 0x%02X\n",rb);
-            return(1);
-        }
-    }
-
-    //SXTB
-    if((inst&0xFFC0)==0xB240)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sxtb  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFF;
-        if(rc&0x80) rc|=(MINUS_ONE)<<8;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //SXTH
-    if((inst&0xFFC0)==0xB200)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sxth  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFFFF;
-        if(rc&0x8000) rc|=(MINUS_ONE)<<16;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //TST
-    if((inst&0xFFC0)==0x4200)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra&rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //UDF
-    if((inst&0xFF00)==0x7E00)
-    {
-        rb=(inst>>0)&0xFF;
-if(DISS) fprintf(stderr,"udf   #%u",rb);
-        goto Return;
-    }
-
-    //UXTB
-    if((inst&0xFFC0)==0xB2C0)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxtb  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //UXTH
-    if((inst&0xFFC0)==0xB280)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFFFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //HINT
-    if((inst&0xFF00)==0xBF00)
-    {
-        rd=(inst>>0)&0xF;
-        rm=(inst>>4)&0xF;
-        //NOP
-        if((rm==0x0)&&(rd=0x0))
-        {
-if(DISS) fprintf(stderr,"nop");
-            goto Return;
-        }
-        //YIELD
-        if((rm==0x1)&&(rd==0x0))
-        {
-if(DISS) fprintf(stderr,"yield");
-            goto Return;
-        }
-        //WFE
-        if((rm==0x2)&&(rd==0x0))
-        {
-            clks++;
-            if(reg_event)reg_event=0;
-            else waiting=WaitForEvt;
-if(DISS) fprintf(stderr,"wfe");
-            goto Return;
-        }
-        //WFI
-        if((rm==0x3)&&(rd==0x0))
-        {
-            clks++;
-            waiting=WaitForInt;
-if(DISS) fprintf(stderr,"wfi");
-            goto Return;
-        }
-        //SEV
-        if((rm==0x4)&&(rd==0x0))
-        {
-            reg_event=1;
-            if(WaitForEvt==waiting)waiting=NoWait;
-if(DISS) fprintf(stderr,"sev");
-            goto Return;
-        }
-    }
-
+ErrOut:
     fprintf(stderr,"invalid instruction 0x%08X 0x%04X\n",pc-4,inst);
     return(1);
 
@@ -2699,7 +2757,7 @@ int run ( void )
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
-        if (0 == (instructions & 0x1f)) {
+        if (0 == (instructions & 0x7f)) {
             c = 0;
             if (frame_buffer && fb_qevent()) {
                 c = fb_event();

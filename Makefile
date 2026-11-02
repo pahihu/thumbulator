@@ -1,7 +1,16 @@
-CC = gcc -flto
-OPTFLAGS = -O3 -ffunction-sections -fdata-sections
+################
+# The Cosmos
+CC = cosmocc
+OPTFLAGS = -O2 -fomit-frame-pointer
+LDFLAGS =
+################
+# UN*X
+# CC = gcc -flto
+# OPTFLAGS = -O3 -ffunction-sections -fdata-sections
+# LDFLAGS = -L /opt/X11/lib -lX11
+# LDSTRIP=-Wl,--gc-sections
+# STRIP=strip
 CFLAGS = $(OPTFLAGS) -I /opt/X11/include -Wall
-LDFLAGS = -L /opt/X11/lib -lX11
 LDSTRIP=
 STRIP=:
 OS = $(shell uname)
@@ -9,8 +18,6 @@ OS = $(shell uname)
 # Linux
 ifeq ($(OS),Linux)
 	CFLAGS += -D_XOPEN_SOURCE=500
-	LDSTRIP=-Wl,--gc-sections
-	STRIP=strip
 endif
 
 # macOS
