@@ -60,6 +60,12 @@ unsigned short ram[RAMSIZE>>1];
 #define CPSR_C (1<<29)
 #define CPSR_V (1<<28)
 #define CPSR_Q (1<<27)
+#define XPSR_FLAGS 0xF8000000u
+#define XPSR_THUMB (1u<<24)
+#define XPSR_STACK_ALIGN (1u<<9)
+
+#define EXCEPTION_HARDFAULT 3
+#define EXCEPTION_SYSTICK 15
 
 unsigned int vcdcount;
 unsigned int output_vcd = 0;
@@ -79,6 +85,7 @@ unsigned int systick_ctrl;
 unsigned int systick_reload;
 unsigned int systick_count;
 unsigned int systick_calibrate;
+static int systick_pending;
 
 void handle_disk(unsigned int wr);
 
@@ -97,7 +104,7 @@ unsigned int fb_port;
 
 unsigned int halfadd;
 unsigned int cpsr;
-unsigned int handler_mode;
+unsigned int active_exception;
 unsigned int reg_norm[16]; //normal execution mode, do not have a thread mode
 
 unsigned int reg_event; //event register
@@ -142,11 +149,16 @@ int xScreenNum, imgWidth, imgHeight;
 //-------------------------------------------------------------------
 int input_char(int c, EvtType typ, int X, int Y)
 {
+    size_t next = input_write_ptr + 1;
+
+    reg_event = 1;
+    if (next == THOR_MAXINPUT) next = 0;
+    if (next == input_read_ptr) return c; // queue full
     input_buffer[input_write_ptr] = c;
     input_event[input_write_ptr].typ = typ;
     input_event[input_write_ptr].X = X;
     input_event[input_write_ptr].Y = Y;
-    if (++input_write_ptr > THOR_MAXINPUT) input_write_ptr = 0;
+    input_write_ptr = next;
     return c;
 }
 //-------------------------------------------------------------------
@@ -407,7 +419,8 @@ if(DBUGFETCH) fprintf(stderr,"0x%08X\n",data);
 if(DBUG) fprintf(stderr,"0x%08X\n",data);
                 if(addr==0x00000000) return(data);
                 if(addr==0x00000004) return(data);
-                if(addr==0x0000003C) return(data);
+                if(addr==4*EXCEPTION_HARDFAULT) return(data);
+                if(addr==4*EXCEPTION_SYSTICK) return(data);
                 fprintf(stderr,"\nfetch32(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
                 exit(1);
             }
@@ -879,11 +892,93 @@ int handle_bkpt(unsigned int bp, unsigned int arg)
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
-int execute ( unsigned int dclks )
+static void advance_systick(unsigned long ticks)
+{
+    unsigned int period = systick_reload + 1;
+
+    if (!(systick_ctrl & SYSTICK_ENABLE) || ticks == 0)
+        return;
+    if (ticks < systick_count) {
+        systick_count -= ticks;
+        return;
+    }
+    if (systick_count != 0 || (systick_reload != 0 && ticks >= period)) {
+        systick_ctrl |= SYSTICK_COUNTFLAG;
+        if (systick_ctrl & SYSTICK_TICKINT)
+            systick_pending = 1;
+    }
+    systick_count = (period - (ticks - systick_count) % period) % period;
+}
+
+static unsigned int enter_exception(unsigned int number, unsigned int return_address,
+                                    unsigned int vector)
+{
+    unsigned int sp = read_register(13);
+    unsigned int xpsr = cpsr | XPSR_THUMB | active_exception;
+
+    if (sp & 4)
+        xpsr |= XPSR_STACK_ALIGN;
+    sp = (sp & ~7u) - 32;
+    write32(sp + 0, read_register(0));
+    write32(sp + 4, read_register(1));
+    write32(sp + 8, read_register(2));
+    write32(sp + 12, read_register(3));
+    write32(sp + 16, read_register(12));
+    write32(sp + 20, read_register(14));
+    write32(sp + 24, return_address);
+    write32(sp + 28, xpsr);
+    clks += 16;
+    write_register(13, sp);
+    write_register(14, active_exception ? 0xFFFFFFF1 : 0xFFFFFFF9);
+    active_exception = number;
+    reg_event = 1;
+    return (vector & ~1u) + 2; // internal PC points two bytes past the next fetch
+}
+
+static unsigned int return_from_exception(void)
+{
+    unsigned int sp = read_register(13);
+    unsigned int pc = read32(sp + 24);
+    unsigned int xpsr = read32(sp + 28);
+
+    write_register(0, read32(sp + 0));
+    write_register(1, read32(sp + 4));
+    write_register(2, read32(sp + 8));
+    write_register(3, read32(sp + 12));
+    write_register(12, read32(sp + 16));
+    write_register(14, read32(sp + 20));
+    write_register(13, sp + 32 + ((xpsr & XPSR_STACK_ALIGN) ? 4 : 0));
+    clks += 16;
+    cpsr = xpsr & XPSR_FLAGS;
+    active_exception = xpsr & 0x1FF;
+    reg_event = 1;
+    return (pc & ~1u) + 2;
+}
+
+static int undefined_instruction(unsigned int address)
+{
+    unsigned int vector;
+
+    if (active_exception == EXCEPTION_HARDFAULT) {
+        fprintf(stderr, "HardFault lockup at 0x%08X\n", address);
+        return 1;
+    }
+    vector = fetch32(4 * EXCEPTION_HARDFAULT);
+    if (!(vector & 1) ||
+        ((vector & 0xF0000000) != ROM_START && (vector & 0xF0000000) != RAM_START)) {
+        fprintf(stderr, "UDF at 0x%08X: invalid HardFault vector 0x%08X\n", address, vector);
+        return 1;
+    }
+    write_register(15, enter_exception(EXCEPTION_HARDFAULT, address, vector));
+    return 0;
+}
+
+int execute ( void )
 {
     unsigned int pc;
     unsigned int sp;
     unsigned int inst;
+    unsigned int second = 0;
 
     unsigned int ra,rb,rc;
     unsigned int rm,rd,rn,rs;
@@ -891,75 +986,18 @@ int execute ( unsigned int dclks )
 
     char *sym = NULL;
 
-//if(fetches>400000) return(1);
-
     pc=read_register(15);
+    if (active_exception && (pc & 0xFFFFFFF0) == 0xFFFFFFF0)
+        pc = return_from_exception();
 
-    if(handler_mode)
+    if (systick_pending && !active_exception)
     {
-        if((pc&0xFFFFFFF0)==0xFFFFFFF0) //EXC_RETURN?
-        {
-            unsigned int sp;
+        unsigned int vector = fetch32(4 * EXCEPTION_SYSTICK);
 
-            handler_mode = 0;
-//fprintf(stderr,"--leaving handler\n");
-            sp=read_register(13);
-            write_register(0,read32(sp)); sp+=4; clks += 2;
-            write_register(1,read32(sp)); sp+=4; clks += 2;
-            write_register(2,read32(sp)); sp+=4; clks += 2;
-            write_register(3,read32(sp)); sp+=4; clks += 2;
-            write_register(12,read32(sp)); sp+=4; clks += 2;
-            write_register(14,read32(sp)); sp+=4; clks += 2;
-            pc=read32(sp); sp+=4; clks += 2;
-            cpsr=read32(sp); sp+=4; clks += 2;
-            write_register(13,sp);
-        }
+        systick_pending = 0;
+        systick_ints++;
+        pc = enter_exception(EXCEPTION_SYSTICK, pc - 2, vector);
     }
-    if(systick_ctrl&SYSTICK_ENABLE)
-    {
-        if(systick_count >= dclks)
-        {
-            systick_count -= dclks;
-        }
-        else
-        {
-            systick_count -= dclks;
-            systick_count += systick_reload;
-            systick_ctrl|=SYSTICK_COUNTFLAG;
-        }
-    }
-
-    if((systick_ctrl&(SYSTICK_TICKINT|SYSTICK_ENABLE))==(SYSTICK_TICKINT|SYSTICK_ENABLE))
-    {
-        if(systick_ctrl&SYSTICK_COUNTFLAG)
-        {
-            if(handler_mode==0)
-            {
-                unsigned int sp;
-
-                systick_ints++;
-//fprintf(stderr,"--- enter systick handler\n");
-                sp=read_register(13);
-                sp-=4; write32(sp,cpsr); clks += 2;
-                sp-=4; write32(sp,pc); clks += 2;
-                sp-=4; write32(sp,read_register(14)); clks += 2;
-                sp-=4; write32(sp,read_register(12)); clks += 2;
-                sp-=4; write32(sp,read_register(3)); clks += 2;
-                sp-=4; write32(sp,read_register(2)); clks += 2;
-                sp-=4; write32(sp,read_register(1)); clks += 2;
-                sp-=4; write32(sp,read_register(0)); clks += 2;
-                write_register(13,sp);
-                pc=fetch32(0x0000003C); //systick vector
-                pc+=2;
-                //trigger return to Thread mode; use MSP for the stack frame
-                write_register(14,0xFFFFFFF9);
-                handler_mode=1;
-            }
-        }
-    }
-
-
-
 
     inst=fetch16(pc-2); clks++;
     pc+=2;
@@ -984,6 +1022,50 @@ if(output_vcd)
 
 
     instructions++;
+
+    // The second halfword of a wide instruction is never executed on its own.
+    if (inst >= 0xE800)
+    {
+        const char *barrier = NULL;
+
+        second = fetch16(pc - 2);
+        clks++;
+        if (DISS) fprintf(stderr, "0x%04X ", second);
+
+        if (inst == 0xF3BF) {
+            switch (second & 0xFFF0) {
+            case 0x8F40: barrier = "dsb"; break;
+            case 0x8F50: barrier = "dmb"; break;
+            case 0x8F60: barrier = "isb"; break;
+            }
+            if (barrier) {
+                // Memory accesses complete synchronously and there is no prefetch.
+                if (DISS) fprintf(stderr, "%s", barrier);
+                write_register(15, pc + 2);
+                clks++;
+                goto Return;
+            }
+        }
+        if ((inst & 0xFFF0) == 0xF7F0 && (second & 0xF000) == 0xA000) {
+            if (DISS) fprintf(stderr, "udf.w #%u\n", ((inst & 0xF) << 12) | (second & 0xFFF));
+            return undefined_instruction(pc - 4);
+        }
+        if ((inst & 0xF800) == 0xF000 && (second & 0xD000) == 0xD000) {
+            unsigned int sign = (inst >> 10) & 1;
+            unsigned int i1 = ((second >> 13) & 1) ^ sign ^ 1;
+            unsigned int i2 = ((second >> 11) & 1) ^ sign ^ 1;
+            unsigned int offset = (i1 << 23) | (i2 << 22) |
+                                  ((inst & 0x3FF) << 12) | ((second & 0x7FF) << 1);
+
+            if (sign) offset |= 0xFF000000u;
+            if (DISS) fprintf(stderr, "bl    0x%08X", pc + offset);
+            write_register(14, pc | 1);
+            write_register(15, pc + offset + 2);
+            clks += 2;
+            goto Return;
+        }
+        goto ErrOut;
+    }
 switch(inst&0xF000){
 case 0x0000:
     //LSL(1)
@@ -1945,13 +2027,6 @@ if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
         goto Return;
     }
 
-    //UDF
-    if((inst&0xFF00)==0x7E00)
-    {
-        rb=(inst>>0)&0xFF;
-if(DISS) fprintf(stderr,"udf   #%u",rb);
-        goto Return;
-    }
 goto ErrOut;
 case 0x8000:
 
@@ -2273,48 +2348,33 @@ if(DISS)
         return(handle_bkpt(rb, read32(read_register(13))));
     }
 
-    //HINT
-    if((inst&0xFF00)==0xBF00)
+    // Hint encodings have a zero low nibble. Other 0xBFxx encodings are IT.
+    if ((inst & 0xFF0F) == 0xBF00)
     {
-        rd=(inst>>0)&0xF;
-        rm=(inst>>4)&0xF;
-        //NOP
-        if((rm==0x0)&&(rd=0x0))
-        {
-if(DISS) fprintf(stderr,"nop");
-            goto Return;
-        }
-        //YIELD
-        if((rm==0x1)&&(rd==0x0))
-        {
-if(DISS) fprintf(stderr,"yield");
-            goto Return;
-        }
-        //WFE
-        if((rm==0x2)&&(rd==0x0))
-        {
+        switch (inst) {
+        case 0xBF10:
+            if (DISS) fprintf(stderr, "yield");
+            break;
+        case 0xBF20:
+            if (DISS) fprintf(stderr, "wfe");
             clks++;
-            if(reg_event)reg_event=0;
-            else waiting=WaitForEvt;
-if(DISS) fprintf(stderr,"wfe");
-            goto Return;
-        }
-        //WFI
-        if((rm==0x3)&&(rd==0x0))
-        {
+            if (reg_event) reg_event = 0;
+            else waiting = WaitForEvt;
+            break;
+        case 0xBF30:
+            if (DISS) fprintf(stderr, "wfi");
             clks++;
-            waiting=WaitForInt;
-if(DISS) fprintf(stderr,"wfi");
-            goto Return;
+            waiting = WaitForInt;
+            break;
+        case 0xBF40:
+            if (DISS) fprintf(stderr, "sev");
+            reg_event = 1;
+            break;
+        default: // NOP and unallocated hints
+            if (DISS) fprintf(stderr, "nop");
+            break;
         }
-        //SEV
-        if((rm==0x4)&&(rd==0x0))
-        {
-            reg_event=1;
-            if(WaitForEvt==waiting)waiting=NoWait;
-if(DISS) fprintf(stderr,"sev");
-            goto Return;
-        }
+        goto Return;
     }
 goto ErrOut;
 case 0xC000:
@@ -2384,6 +2444,12 @@ if(DISS)
     }
 goto ErrOut;
 case 0xD000:
+
+    if ((inst & 0xFF00) == 0xDE00) {
+        if (DISS) fprintf(stderr, "udf #%u\n", inst & 0xFF);
+        return undefined_instruction(pc - 4);
+    }
+
 
     //--- F000 ---
     //B(1) conditional branch
@@ -2566,136 +2632,13 @@ if(DISS) fprintf(stderr,"b     0x%08X",rb-4);
         write_register(15,rb); clks++;
         goto Return;
     }
-    //BL/BLX(1)
-    if((inst&0xE000)==0xE000) //BL,BLX
-    {
-        if((inst&0x1800)==0x1000) //H=b10
-        {
-if(DISS) fprintf(stderr,"\n");
-            rb=inst&((1<<11)-1);
-            if(rb&1<<10) rb|=(~((1<<11)-1)); //sign extend
-            rb<<=12;
-            rb+=pc;
-            write_register(14,rb); clks++;
-            return(0);
-        }
-        else
-        if((inst&0x1800)==0x1800) //H=b11
-        {
-            //branch to thumb
-            rb=read_register(14);
-            rb+=(inst&((1<<11)-1))<<1;;
-            rb+=2;
-
-if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
-            write_register(14,(pc-2)|1); clks++;
-            write_register(15,rb); clks++;
-            goto Return;
-        }
-        else
-        if((inst&0x1800)==0x0800) //H=b01
-        {
-            //fprintf(stderr,"cannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            //return(1);
-            //branch to thumb
-            rb=read_register(14);
-            rb+=(inst&((1<<11)-1))<<1;;
-            rb&=0xFFFFFFFC;
-            rb+=2;
-
-printf("hello\n");
-
-if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
-            write_register(14,(pc-2)|1); clks++;
-            write_register(15,rb); clks++;
-            goto Return;
-        }
-    }
-goto ErrOut;
-case 0xF000:
-
-    //BL/BLX(1)
-    if((inst&0xE000)==0xE000) //BL,BLX
-    {
-        if((inst&0x1800)==0x1000) //H=b10
-        {
-if(DISS) fprintf(stderr,"\n");
-            rb=inst&((1<<11)-1);
-            if(rb&1<<10) rb|=(~((1<<11)-1)); //sign extend
-            rb<<=12;
-            rb+=pc;
-            write_register(14,rb); clks++;
-            return(0);
-        }
-        else
-        if((inst&0x1800)==0x1800) //H=b11
-        {
-            //branch to thumb
-            rb=read_register(14);
-            rb+=(inst&((1<<11)-1))<<1;;
-            rb+=2;
-
-if(DISS) fprintf(stderr,"bl    0x%08X",rb-2);
-            write_register(14,(pc-2)|1); clks++;
-            write_register(15,rb); clks++;
-            goto Return;
-        }
-        else
-        if((inst&0x1800)==0x0800) //H=b01
-        {
-            //fprintf(stderr,"cannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            //return(1);
-            //branch to thumb
-            rb=read_register(14);
-            rb+=(inst&((1<<11)-1))<<1;;
-            rb&=0xFFFFFFFC;
-            rb+=2;
-
-printf("hello\n");
-
-if(DISS) fprintf(stderr,"bl    0x%08X",rb-3);
-            write_register(14,(pc-2)|1); clks++;
-            write_register(15,rb); clks++;
-            goto Return;
-        }
-    }
-
-    //111100111011....
-    if((inst&0xFFF0)==0xF3B0)
-    {
-        inst=fetch16(pc-2); clks += 2;
-        // ??? pc+=2;
-        // ??? write_register(15,pc);
-        
-        //DMB
-        //10.0....0101....
-        if((inst&0xD0F0)==0x8050)
-        {
-            rb=(inst>>0)&0xF;
-if(DISS) fprintf(stderr,"dmb   %u",rb);
-            goto Return;
-        }
-        //DSB
-        //10.0....0100....
-        if((inst&0xD0F0)==0x8040)
-        {
-            rb=(inst>>0)&0xF;
-if(DISS) fprintf(stderr,"dmb   %u",rb);
-            goto Return;
-        }
-        //ISB
-        //10.0....0110....
-        if((inst&0xD0F0)==0x8060)
-        {
-            rb=(inst>>0)&0xF;
-if(DISS) fprintf(stderr,"isb   %u",rb);
-            goto Return;
-        }
-    }
+    goto ErrOut;
 } /* SWITCH END */
 
 ErrOut:
-    fprintf(stderr,"invalid instruction 0x%08X 0x%04X\n",pc-4,inst);
+    fprintf(stderr,"invalid instruction 0x%08X 0x%04X",pc-4,inst);
+    if (inst >= 0xE800) fprintf(stderr," 0x%04X",second);
+    fputc('\n', stderr);
     return(1);
 
 Return:
@@ -2720,7 +2663,8 @@ int reset ( void )
     if (tenms < 0x01000000)
         systick_calibrate |= tenms;
     /*--------------------------------*/
-    handler_mode=0;
+    active_exception=0;
+    systick_pending=0;
     cpsr=0;
     reg_event=0;
     waiting=NoWait;
@@ -2745,36 +2689,87 @@ int reset ( void )
     return(0);
 }
 //-------------------------------------------------------------------
-int run ( void )
+static void poll_host_input(int *input_open)
 {
     char c;
-    unsigned int dclks = 0, pclks;
+    ssize_t n;
+
+    while (frame_buffer && fb_qevent())
+        fb_event();
+    if (*input_open) {
+        while ((n = read(read_fd, &c, 1)) == 1)
+            input_char(c, EvtKey, -1, -1);
+        if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+            *input_open = 0;
+    }
+}
+
+static void wait_for_host_input(int input_open)
+{
+    fd_set fds;
+    int nfds = 0;
+
+    FD_ZERO(&fds);
+    if (input_open) {
+        FD_SET(read_fd, &fds);
+        nfds = read_fd + 1;
+    }
+#if HAVE_X11
+    if (frame_buffer) {
+        int xfd = ConnectionNumber(xDisplay);
+        FD_SET(xfd, &fds);
+        if (xfd >= nfds) nfds = xfd + 1;
+    }
+#endif
+    select(nfds, &fds, NULL, NULL, NULL);
+}
+
+int run ( void )
+{
+    int input_open = 1;
 
     reset();
     while(1)
     {
+        unsigned long previous_clks;
+
+        if (waiting != NoWait || (instructions & 0x7F) == 0)
+            poll_host_input(&input_open);
+
+        if (waiting != NoWait) {
+            // Queued console input can wake WFI without a guest IRQ vector.
+            int wake = (!active_exception && systick_pending) ||
+                       (waiting == WaitForInt && input_read_ptr != input_write_ptr);
+
+            if (waiting == WaitForEvt && reg_event) {
+                reg_event = 0;
+                wake = 1;
+            }
+            if (!wake && !active_exception &&
+                (systick_ctrl & (SYSTICK_ENABLE | SYSTICK_TICKINT)) ==
+                (SYSTICK_ENABLE | SYSTICK_TICKINT) &&
+                (systick_count != 0 || systick_reload != 0)) {
+                unsigned int ticks = systick_count ? systick_count : systick_reload + 1;
+
+                // Advance to the interrupt without fetching any instructions.
+                clks += ticks;
+                advance_systick(ticks);
+                wake = 1;
+            }
+            if (!wake) {
+                wait_for_host_input(input_open);
+                continue;
+            }
+            waiting = NoWait;
+        }
+
         if(output_vcd)
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
-        if (0 == (instructions & 0x7f)) {
-            c = 0;
-            if (frame_buffer && fb_qevent()) {
-                c = fb_event();
-            } else {
-                while (read(read_fd, &c, 1) == 1)
-                    c = input_char(c, EvtKey, -1, -1);
-            }
-            if(c){
-                if(WaitForInt==waiting)waiting=NoWait;
-            }
-        }
-        if(WaitForInt!=waiting)
-        {
-            pclks = clks;
-            if(execute(dclks)) break;
-            dclks = clks - pclks;
-        }
+        previous_clks = clks;
+        if (execute()) break;
+        advance_systick(clks - previous_clks);
     }
     dump_counters();
     return(0);

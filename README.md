@@ -5,7 +5,6 @@ Changes:
 * rewrote ceforth33.c stacks using pointer arithmetic
 * volatile UART regs, works in -O1/-O2 etc.
 * ceForth V3.3 runs compiled in no opt. mode (-O0)
-* decodes DMB, DSB, ISB, NOP, SEV, UDF, WFE, WFI, YIELD
 
 pahihu
 
@@ -28,10 +27,8 @@ based core. The thumbulator does not support thumb2 instructions at
 this time, if/when that happens it will likely be a separate simulator
 to keep the two separate, simple, and clean.
 
-There are virtually no peripherals, one uart port for TX only (prints
-the character to the console). A port that prints the 32 bit value
-written to the console, and a port to halt the processor. Adding your
-own peripherals is easy.
+The [memory-mapped I/O reference](doc/memory-mapped-io.md) covers the console,
+input events, SysTick, CPUID, X11 framebuffer, disk images, debug output and halt.
 
 Not necessarily cycle accurate to any real ARM core, it is designed
 around a 16 bit data bus model similar to running on a GBA, and
