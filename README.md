@@ -73,3 +73,24 @@ http://www.home.marutan.net/arcemdocs/
 https://www.intel.com/content/dam/www/programmable/us/en/pdfs/literature/third-party/archives/ddi0100e_arm_arm.pdf
 https://www.cs.miami.edu/~burt/learning/Csc521.141/Documents/arm_arm.pdf
 
+
+
+## Building with ESP-AT networking
+
+Build the simulator on the host using the default Cosmopolitan compiler or a
+native POSIX C compiler. The simulator builds from `thumbulator.c` with libc
+and pthreads. Use `arm-none-eabi-gcc` to build the ARM firmware image.
+
+```sh
+make CC=cosmocc
+make clean
+make CC=cc
+```
+
+The ESP-AT protocol and socket transport are adapted from
+[Oberon07-tools](https://github.com/pahihu/Oberon07-tools) at
+`d15dc7b35148ce2d4ad57ced9589d95e218867ba`. The
+[memory-mapped I/O reference](memory-mapped-io.md) lists the second UART
+registers. The original console continues to use its own UART.
+Run `python3 regress/esp_at.py ./thumbulator` to check TCP client, listener
+and UDP traffic through a Cortex-M0 UART test ROM.

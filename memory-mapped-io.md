@@ -29,6 +29,22 @@ coordinates set to `-1`. An X11 mouse button queues the byte `128 + button`.
 Check the input status to distinguish an empty queue from a queued zero byte.
 Read the event type and coordinates before consuming the byte.
 
+## ESP-AT UART and host clock
+
+The independent ESP-AT UART is built into Thumbulator. Use 32-bit transfers
+and check the applicable ready bit before accessing data.
+The emulator supports outgoing TCP, one loopback TCP listener, and IPv4 UDP,
+including peer metadata with `AT+CIPDINFO=1`. TCP connect and socket I/O are
+nonblocking. TCP hostname resolution runs on a background thread.
+The guest drives the modem by polling the UART registers.
+
+| Address | Access | Behavior |
+| --- | --- | --- |
+| `0xE0000040` | Write | Sends the low byte to the ESP-AT emulator when TX is ready. |
+| `0xE0000044` | Read | Consumes an ESP-AT response byte when RX is ready. |
+| `0xE0000048` | Read | Bit 0 signals RX-ready. Bit 1 signals TX-ready. |
+| `0xE000004C` | Read | Returns host Unix seconds as a 32-bit word. |
+
 ## SysTick and CPUID
 
 | Address | Access | Behavior |
@@ -75,8 +91,7 @@ offsets and run synchronously when the command register is written.
 | `0xE3000030` | Read | Status of the last transfer. 1 means all 512 bytes transferred. 0 means the request failed or the transfer was short. |
 | `0xE3004000`–`0xE30041FF` | Read/write | Transfer buffer, 128 words. |
 
-The range check requires the offset to be strictly below `image_size - 512`.
-An access starting exactly at the final complete block is rejected.
+The last valid starting offset is `image_size - 512`. Transfers stay within the image.
 
 ## Debug output and halt
 

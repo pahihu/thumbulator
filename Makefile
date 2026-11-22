@@ -10,7 +10,8 @@ LDFLAGS =
 # LDFLAGS = -L /opt/X11/lib -lX11
 # LDSTRIP=-Wl,--gc-sections
 # STRIP=strip
-CFLAGS = $(OPTFLAGS) -I /opt/X11/include -Wall
+THREAD_FLAGS ?= -pthread
+CFLAGS = $(OPTFLAGS) -I /opt/X11/include -Wall $(THREAD_FLAGS)
 LDSTRIP=
 STRIP=:
 OS = $(shell uname)
@@ -20,10 +21,12 @@ ifeq ($(OS),Linux)
 	CFLAGS += -D_XOPEN_SOURCE=500
 endif
 
-# macOS
+# Native macOS build. Leave the Cosmopolitan executable intact.
 ifeq ($(OS),Darwin)
+ifneq ($(notdir $(firstword $(CC))),cosmocc)
 	LDSTRIP=-Wl,-dead_strip
 	STRIP=strip
+endif
 endif
 
 thumbulator : thumbulator.o

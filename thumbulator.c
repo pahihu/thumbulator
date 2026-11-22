@@ -1,3 +1,6 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +15,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <assert.h>
+#include <netdb.h>
+#include <pthread.h>
 
 #ifndef INADDR_ANY
 #define INADDR_ANY  0
@@ -32,6 +41,10 @@ unsigned int read_register ( unsigned int );
 #define ROM_START       0x00000000
 #define RAM_START       0x40000000
 #define PERIPH_START    0xE0000000
+#define ESP_AT_TX       0xE0000040
+#define ESP_AT_RX       0xE0000044
+#define ESP_AT_STATUS   0xE0000048
+#define HOST_SECONDS    0xE000004C
 
 static int DBUGFETCH = 0;
 static int DBUGRAM   = 0;
@@ -86,6 +99,7 @@ unsigned int systick_reload;
 unsigned int systick_count;
 unsigned int systick_calibrate;
 static int systick_pending;
+static int primask;
 
 void handle_disk(unsigned int wr);
 
@@ -146,6 +160,766 @@ Window xWin;
 XImage *xImg;
 int xScreenNum, imgWidth, imgHeight;
 #endif
+/* POSIX socket transport for the ESP-AT UART, adapted from
+   Oberon07-tools/lib/TCPSockets.c. Only DNS runs on worker threads. */
+#define BAD_SOCKET (-1)
+static pthread_mutex_t resolver_lock = PTHREAD_MUTEX_INITIALIZER;
+#define ESP_LOCK() ((void)pthread_mutex_lock(&resolver_lock))
+#define ESP_UNLOCK() ((void)pthread_mutex_unlock(&resolver_lock))
+static int socket_error(void) { return errno; }
+static int busy(int e) { return e == EWOULDBLOCK || e == EAGAIN || e == EINPROGRESS || e == EALREADY || e == EINTR; }
+static uint32_t esp_milliseconds(void) {
+    struct timespec ts = {0};
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+static int nonblocking(int s) {
+    int flags = fcntl(s, F_GETFL);
+    if (flags < 0 || fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    /* Do not inherit sockets across exec. */
+    flags = fcntl(s, F_GETFD);
+    if (flags >= 0) (void)fcntl(s, F_SETFD, flags | FD_CLOEXEC);
+    return 0;
+}
+
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK (0x7f000001u)
+#endif
+
+#define ESP_LINKS 5
+#define ESP_CONNECT_TIMEOUT 10000u
+#define ESP_PAYLOAD_MAX 1460
+typedef enum { ESP_CLOSED, ESP_RESOLVING, ESP_CONNECTING, ESP_TCP, ESP_UDP } EspPhase;
+/* resolver state: 0 idle, 1 running, 2 finished, 3 abandoned.
+   A canceled running resolver retains its slot until getaddrinfo returns. */
+typedef struct {
+    int resolver_state, resolver_error;
+    char host[256], service[8];
+    struct addrinfo *addresses, *next;
+    int socket;
+    EspPhase phase;
+    uint32_t started;
+    struct sockaddr_in peer;
+    int accepted;
+    int udp_mode; /* ESP-AT peer update policy */
+} Link;
+static Link links[ESP_LINKS];
+static int sockets_initialized;
+static int listener = BAD_SOCKET;
+
+static void esp_resolve(Link *p)
+{
+    struct addrinfo hints, *addresses = NULL;
+    int error;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    error = getaddrinfo(p->host, p->service, &hints, &addresses);
+    ESP_LOCK();
+    if (p->resolver_state == 3) {
+        if (addresses) freeaddrinfo(addresses);
+        p->resolver_state = 0;
+    } else {
+        p->addresses = addresses;
+        p->resolver_error = error;
+        p->resolver_state = 2;
+    }
+    ESP_UNLOCK();
+}
+static void *resolver_thread(void *arg) { esp_resolve((Link *)arg); return NULL; }
+
+static void esp_socket_close(int id)
+{
+    Link *p;
+    if (!sockets_initialized || id < 0 || id >= ESP_LINKS) return;
+    p = &links[id];
+    if (p->socket != BAD_SOCKET) close(p->socket);
+    p->socket = BAD_SOCKET;
+    p->phase = ESP_CLOSED;
+    p->accepted = 0;
+    ESP_LOCK();
+    if (p->resolver_state == 1) p->resolver_state = 3;
+    else if (p->resolver_state != 3) {
+        if (p->addresses) freeaddrinfo(p->addresses);
+        p->addresses = p->next = NULL;
+        p->resolver_state = 0;
+    }
+    ESP_UNLOCK();
+}
+
+static void esp_socket_stop_listener(void)
+{
+    int i;
+    if (listener != BAD_SOCKET) close(listener);
+    listener = BAD_SOCKET;
+    for (i = 0; i < ESP_LINKS; ++i) {
+        if (links[i].accepted) esp_socket_close(i);
+    }
+}
+
+static int esp_socket_listen(int port)
+{
+    struct sockaddr_in address;
+    int s;
+    if (port < 1 || port > 65535 || listener != BAD_SOCKET) return -1;
+    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == BAD_SOCKET) return -1;
+    { int one = 1; (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one); }
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((uint16_t)port);
+    if (nonblocking(s) != 0 ||
+        bind(s, (const struct sockaddr *)&address, sizeof address) != 0 ||
+        listen(s, 1) != 0) {
+        close(s);
+        return -1;
+    }
+    listener = s;
+    return 0;
+}
+
+static int esp_socket_accept(void)
+{
+    int i, id = -1;
+    int s;
+    if (listener == BAD_SOCKET) return -1;
+    for (i = 0; i < ESP_LINKS; ++i) {
+        if (links[i].accepted) return -1;
+        if (id < 0 && links[i].phase == ESP_CLOSED) id = i;
+    }
+    if (id < 0) return -1;
+    s = accept(listener, NULL, NULL);
+    if (s == BAD_SOCKET) return -1;
+    if (nonblocking(s) != 0) { close(s); return -1; }
+#ifdef SO_NOSIGPIPE
+    { int one = 1; (void)setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one); }
+#endif
+    links[id].socket = s;
+    links[id].phase = ESP_TCP;
+    links[id].accepted = 1;
+    return id;
+}
+
+static void esp_socket_close_all(void)
+{
+    int i;
+    esp_socket_stop_listener();
+    for (i = 0; i < ESP_LINKS; ++i) esp_socket_close(i);
+}
+
+static int esp_socket_start(int id, const char *host, int port)
+{
+    Link *p;
+    size_t n;
+    int result = 0;
+    pthread_t thread;
+    pthread_attr_t attr;
+    if (id < 0 || id >= ESP_LINKS || port < 1 || port > 65535) return -1;
+    n = strlen(host);
+    if (!n || n >= sizeof links[0].host) return -1;
+    p = &links[id];
+    if (p->phase) return -1;
+    ESP_LOCK();
+    if (p->resolver_state != 0) { ESP_UNLOCK(); return -1; }
+    memcpy(p->host, host, n + 1);
+    snprintf(p->service, sizeof p->service, "%d", port);
+    p->resolver_state = 1;
+    p->resolver_error = 0;
+    p->started = esp_milliseconds();
+    p->phase = ESP_RESOLVING;
+    if (pthread_attr_init(&attr) != 0) result = -1;
+    else {
+        if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0 ||
+            pthread_create(&thread, &attr, resolver_thread, p) != 0) result = -1;
+        (void)pthread_attr_destroy(&attr);
+    }
+    if (result) { p->resolver_state = 0; p->phase = ESP_CLOSED; }
+    ESP_UNLOCK();
+    return result;
+}
+
+static void release_addresses(Link *p)
+{
+    ESP_LOCK();
+    if (p->addresses) freeaddrinfo(p->addresses);
+    p->addresses = p->next = NULL;
+    p->resolver_state = 0;
+    ESP_UNLOCK();
+}
+
+static int try_address(Link *p)
+{
+    int result, error;
+    struct addrinfo *a;
+    while ((a = p->next) != NULL) {
+        p->next = a->ai_next;
+        p->socket = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (p->socket == BAD_SOCKET) continue;
+        if (p->socket >= FD_SETSIZE) { close(p->socket); p->socket = BAD_SOCKET; continue; }
+#ifdef SO_NOSIGPIPE
+        { int one = 1; (void)setsockopt(p->socket, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one); }
+#endif
+        if (nonblocking(p->socket) == 0) {
+            result = connect(p->socket, a->ai_addr, a->ai_addrlen);
+            if (result == 0) { p->phase = ESP_TCP; release_addresses(p); return 1; }
+            error = socket_error();
+            if (busy(error)) { p->phase = ESP_CONNECTING; return 0; }
+        }
+        close(p->socket);
+        p->socket = BAD_SOCKET;
+    }
+    release_addresses(p);
+    p->phase = ESP_CLOSED;
+    return -1;
+}
+
+static int esp_socket_poll(int id)
+{
+    Link *p;
+    fd_set wr, ex;
+    struct timeval zero;
+    int state, result, error = 0;
+    socklen_t length = sizeof error;
+    if (id < 0 || id >= ESP_LINKS) return -1;
+    p = &links[id];
+    if (p->phase == ESP_TCP) return 1;
+    if (!p->phase) return -1;
+    if ((uint32_t)(esp_milliseconds() - p->started) >= ESP_CONNECT_TIMEOUT) {
+        esp_socket_close(id); return -1;
+    }
+    if (p->phase == ESP_RESOLVING) {
+        ESP_LOCK(); state = p->resolver_state; ESP_UNLOCK();
+        if (state != 2) return 0;
+        if (p->resolver_error) { esp_socket_close(id); return -1; }
+        p->next = p->addresses;
+        return try_address(p);
+    }
+    FD_ZERO(&wr); FD_ZERO(&ex);
+    FD_SET(p->socket, &wr); FD_SET(p->socket, &ex);
+    zero.tv_sec = 0; zero.tv_usec = 0;
+    result = select(p->socket + 1, NULL, &wr, &ex, &zero);
+    if (result == 0 || (result < 0 && busy(socket_error()))) return 0;
+    if (result > 0 && getsockopt(p->socket, SOL_SOCKET, SO_ERROR, (char *)&error, &length) == 0 && !error) {
+        p->phase = ESP_TCP; release_addresses(p); return 1;
+    }
+    close(p->socket); p->socket = BAD_SOCKET;
+    return try_address(p);
+}
+
+static int esp_socket_send(int id, const unsigned char *data, int offset, int count)
+{
+    int n, flags = 0;
+    if (id < 0 || id >= ESP_LINKS || links[id].phase != ESP_TCP || offset < 0 || count < 0 || count > ESP_PAYLOAD_MAX || offset > ESP_PAYLOAD_MAX - count) return -1;
+#ifdef MSG_NOSIGNAL
+    flags = MSG_NOSIGNAL;
+#endif
+    n = (int)send(links[id].socket, (const char *)data + offset, count, flags);
+    if (n < 0) return busy(socket_error()) ? 0 : -1;
+    return n;
+}
+
+static int esp_socket_receive(int id, unsigned char *data, int count)
+{
+    int n;
+    if (id < 0 || id >= ESP_LINKS || links[id].phase != ESP_TCP || count < 1 || count > 512) return -1;
+    n = (int)recv(links[id].socket, (char *)data, count, 0);
+    if (n < 0) return busy(socket_error()) ? 0 : -1;
+    return n == 0 ? -1 : n;
+}
+
+static int esp_ipv4(struct sockaddr_in *address, const char *host, int port)
+{
+    memset(address, 0, sizeof *address);
+    address->sin_family = AF_INET;
+    address->sin_port = htons((uint16_t)port);
+    return inet_pton(AF_INET, host, &address->sin_addr) == 1;
+}
+
+static int esp_socket_udp_start(int id, const char *host, int port, int local, int mode)
+{
+    Link *p;
+    int s;
+    struct sockaddr_in address, peer;
+    int one = 1;
+    if (id < 0 || id >= ESP_LINKS || port < 1 || port > 65535 ||
+        local < 0 || local > 65535 || mode < 0 || mode > 2 || !esp_ipv4(&peer, host, port)) return -1;
+    p = &links[id];
+    if (p->phase) return -1;
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == BAD_SOCKET) return -1;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_port = htons((uint16_t)local);
+    if (nonblocking(s) != 0 ||
+        setsockopt(s, SOL_SOCKET, SO_BROADCAST, (const char *)&one, sizeof one) != 0 ||
+        bind(s, (const struct sockaddr *)&address, sizeof address) != 0) {
+        close(s);
+        return -1;
+    }
+    p->socket = s;
+    p->peer = peer;
+    p->udp_mode = mode;
+    p->phase = ESP_UDP;
+    return 0;
+}
+
+static int esp_socket_udp_send(int id, const unsigned char *data, int count, const char *host, int port)
+{
+    struct sockaddr_in peer;
+    int n;
+    if (id < 0 || id >= ESP_LINKS || links[id].phase != ESP_UDP || count < 1 || count > ESP_PAYLOAD_MAX) return -1;
+    peer = links[id].peer;
+    if (host[0] && (port < 1 || port > 65535 || !esp_ipv4(&peer, host, port))) return -1;
+    n = (int)sendto(links[id].socket, (const char *)data, count, 0,
+                    (const struct sockaddr *)&peer, sizeof peer);
+    if (n < 0) return busy(socket_error()) ? 0 : -1;
+    return n == count ? 1 : -1;
+}
+
+static int esp_socket_udp_receive(int id, unsigned char *data, unsigned char *peer)
+{
+    struct sockaddr_in source;
+    unsigned char packet[ESP_PAYLOAD_MAX + 1];
+    int n, error;
+    Link *p;
+    socklen_t length = sizeof source;
+    if (id < 0 || id >= ESP_LINKS || links[id].phase != ESP_UDP) return -1;
+    p = &links[id];
+    n = (int)recvfrom(p->socket, (char *)packet, sizeof packet, 0,
+                      (struct sockaddr *)&source, &length);
+    if (n < 0) {
+        error = socket_error();
+        if (error == ECONNREFUSED) return 0;
+        return busy(error) ? 0 : -1;
+    }
+    if (n > ESP_PAYLOAD_MAX) return 0;
+    if (p->udp_mode > 0) {
+        if (p->udp_mode == 1 && (source.sin_addr.s_addr != p->peer.sin_addr.s_addr ||
+                                source.sin_port != p->peer.sin_port)) p->udp_mode = 0;
+        p->peer = source;
+    }
+    memcpy(data, packet, (size_t)n);
+    memcpy(peer, &source.sin_addr.s_addr, 4);
+    memcpy(peer + 4, &source.sin_port, 2);
+    return n + 1;
+}
+
+static void esp_sockets_init(void)
+{
+    int i;
+    if (sockets_initialized) return;
+    for (i = 0; i < ESP_LINKS; ++i) links[i].socket = BAD_SOCKET;
+    sockets_initialized = 1;
+    (void)atexit(esp_socket_close_all);
+}
+
+/* ESP-AT UART protocol, ported from Oberon07-tools/Oberon0/TCPNet.Mod. */
+enum { ESP_RX_SIZE = 8192, ESP_REPLY_SPACE = 1024, ESP_TCP_READ = 512 };
+static struct {
+    unsigned char rx[ESP_RX_SIZE];
+    size_t head, count;
+    char line[512];
+    size_t length;
+    bool echo, joined, discard, ip_info;
+    bool connected[ESP_LINKS], udp[ESP_LINKS], accepted[ESP_LINKS];
+    int opening, sending, wanted, collected, sent;
+    unsigned char payload[ESP_PAYLOAD_MAX];
+    char send_host[256];
+    int send_port;
+} esp;
+
+static size_t esp_room(void)
+{
+    return sizeof esp.rx - esp.count;
+}
+
+static void esp_put(unsigned char ch)
+{
+    assert(esp_room() != 0);
+    esp.rx[(esp.head + esp.count) % sizeof esp.rx] = ch;
+    ++esp.count;
+}
+
+static void esp_text(const char *text)
+{
+    while (*text) esp_put(*text++);
+}
+
+static void esp_number(int number)
+{
+    char digits[12];
+    snprintf(digits, sizeof digits, "%d", number);
+    esp_text(digits);
+}
+
+static void esp_reply(bool ok)
+{
+    esp_text(ok ? "\r\nOK\r\n" : "\r\nERROR\r\n");
+}
+
+static void esp_event(int id, const char *event)
+{
+    esp_text("\r\n");
+    esp_number(id);
+    esp_put(',');
+    esp_text(event);
+    esp_text("\r\n");
+}
+
+static bool esp_match(const char **input, const char *prefix)
+{
+    size_t length = strlen(prefix);
+
+    if (strncmp(*input, prefix, length) != 0) return false;
+    *input += length;
+    return true;
+}
+
+static void esp_skip(const char **input)
+{
+    while (**input == ' ') ++*input;
+}
+
+static bool esp_comma(const char **input)
+{
+    esp_skip(input);
+    return esp_match(input, ",");
+}
+
+static bool esp_end(const char *input)
+{
+    esp_skip(&input);
+    return *input == '\0';
+}
+
+static bool esp_decimal(const char **input, int *value)
+{
+    const char *start;
+    int number = 0;
+
+    esp_skip(input);
+    start = *input;
+    while (**input >= '0' && **input <= '9') {
+        number = number * 10 + **input - '0';
+        if (number > 65535) return false;
+        ++*input;
+    }
+    *value = number;
+    return *input != start;
+}
+
+static bool esp_quoted(const char **input, char *value, size_t capacity)
+{
+    size_t length = 0;
+
+    esp_skip(input);
+    if (!esp_match(input, "\"")) return false;
+    while (**input && **input != '"') {
+        unsigned char ch = *(*input)++;
+        if (ch == '\\' && **input) ch = *(*input)++;
+        if (ch < ' ' || length + 1 >= capacity) return false;
+        value[length++] = ch;
+    }
+    value[length] = '\0';
+    return esp_match(input, "\"");
+}
+
+static void esp_disconnect(int id)
+{
+    esp_socket_close(id);
+    esp.connected[id] = esp.accepted[id] = false;
+    esp_event(id, "CLOSED");
+}
+
+static void esp_close(void)
+{
+    esp_socket_close_all();
+    memset(esp.connected, 0, sizeof esp.connected);
+    memset(esp.udp, 0, sizeof esp.udp);
+    memset(esp.accepted, 0, sizeof esp.accepted);
+    esp.opening = esp.sending = -1;
+}
+
+static void esp_reset(void)
+{
+    esp_close();
+    esp.head = esp.count = esp.length = 0;
+    esp.echo = esp.joined = true;
+    esp.discard = esp.ip_info = false;
+}
+
+static void esp_connect(const char *input)
+{
+    int id, port, local = 0, mode = 0;
+    char protocol[4], host[256];
+
+    if (!esp_decimal(&input, &id) || !esp_comma(&input) ||
+        !esp_quoted(&input, protocol, sizeof protocol) || !esp_comma(&input) ||
+        !esp_quoted(&input, host, sizeof host) || !esp_comma(&input) ||
+        !esp_decimal(&input, &port) || !port || id >= ESP_LINKS ||
+        !esp.joined || esp.connected[id]) {
+        esp_reply(false);
+        return;
+    }
+
+    if (!strcmp(protocol, "TCP") && esp_end(input) &&
+        esp_socket_start(id, host, port) == 0) {
+        esp.opening = id;
+        esp.udp[id] = false;
+        return;
+    }
+
+    if (!strcmp(protocol, "UDP") &&
+        (esp_end(input) ||
+         (esp_comma(&input) && esp_decimal(&input, &local) &&
+          (esp_end(input) || (esp_comma(&input) && esp_decimal(&input, &mode))))) &&
+        esp_end(input) && esp_socket_udp_start(id, host, port, local, mode) == 0) {
+        esp.udp[id] = esp.connected[id] = true;
+        esp_event(id, "CONNECT");
+        esp_reply(true);
+        return;
+    }
+
+    esp_reply(false);
+}
+
+static void esp_begin_send(const char *input)
+{
+    int id, count;
+
+    esp.send_host[0] = '\0';
+    esp.send_port = 0;
+    if (!esp_decimal(&input, &id) || !esp_comma(&input) ||
+        !esp_decimal(&input, &count) || id >= ESP_LINKS ||
+        !esp.connected[id] || count < 1 || count > ESP_PAYLOAD_MAX ||
+        (!esp_end(input) &&
+         (!esp.udp[id] || !esp_comma(&input) ||
+          !esp_quoted(&input, esp.send_host, sizeof esp.send_host) ||
+          !esp.send_host[0] || !esp_comma(&input) ||
+          !esp_decimal(&input, &esp.send_port) || !esp.send_port ||
+          !esp_end(input)))) {
+        esp_reply(false);
+        return;
+    }
+    esp.sending = id;
+    esp.wanted = count;
+    esp.collected = esp.sent = 0;
+    esp_reply(true);
+    esp_text("> ");
+}
+
+static void esp_execute(void)
+{
+    static const char *const setup[] = {
+        "AT", "AT+CWMODE=1", "AT+CIPMODE=0", "AT+CIPMUX=1",
+        "AT+CIPRECVMODE=0", "AT+CIPSERVERMAXCONN=1"
+    };
+    const char *input = esp.line;
+    int id, port;
+
+    esp.line[esp.length] = '\0';
+    esp.length = 0;
+    if (esp.echo) {
+        esp_text(input);
+        esp_text("\r\n");
+    }
+    for (size_t i = 0; i < sizeof setup / sizeof *setup; ++i) {
+        if (!strcmp(input, setup[i])) {
+            esp_reply(true);
+            return;
+        }
+    }
+
+    if (!strcmp(input, "ATE0") || !strcmp(input, "ATE1")) {
+        esp.echo = input[3] == '1';
+        esp_reply(true);
+    } else if (!strcmp(input, "AT+CIPDINFO=0") || !strcmp(input, "AT+CIPDINFO=1")) {
+        esp.ip_info = input[12] == '1';
+        esp_reply(true);
+    } else if (!strcmp(input, "AT+CIPSERVER=0,1")) {
+        for (id = 0; id < ESP_LINKS; ++id)
+            if (esp.accepted[id]) esp_disconnect(id);
+        esp_socket_stop_listener();
+        esp_reply(true);
+    } else if (!strcmp(input, "AT+RST")) {
+        esp_reset();
+        esp_reply(true);
+        esp_text("ready\r\n");
+    } else if (!strcmp(input, "AT+CWQAP")) {
+        for (id = 0; id < ESP_LINKS; ++id)
+            if (esp.connected[id]) esp_event(id, "CLOSED");
+        esp_close();
+        esp.joined = false;
+        esp_text("WIFI DISCONNECT\r\n");
+        esp_reply(true);
+    } else if (esp_match(&input, "AT+CWJAP=")) {
+        char ssid[256], password[256];
+        bool ok = esp_quoted(&input, ssid, sizeof ssid) && esp_comma(&input) &&
+                  esp_quoted(&input, password, sizeof password) && esp_end(input);
+        if (ok) {
+            esp.joined = true;
+            esp_text("WIFI CONNECTED\r\nWIFI GOT IP\r\n");
+        }
+        esp_reply(ok);
+    } else if (esp_match(&input, "AT+CIPSERVER=1,")) {
+        esp_reply(esp_decimal(&input, &port) && esp_end(input) && esp.joined &&
+                  esp_socket_listen(port) == 0);
+    } else if (esp_match(&input, "AT+CIPSTART=")) {
+        esp_connect(input);
+    } else if (esp_match(&input, "AT+CIPSEND=")) {
+        esp_begin_send(input);
+    } else if (esp_match(&input, "AT+CIPCLOSE=")) {
+        bool ok = esp_decimal(&input, &id) && id < ESP_LINKS &&
+                  esp_end(input) && esp.connected[id];
+        if (ok) esp_disconnect(id);
+        esp_reply(ok);
+    } else {
+        esp_reply(false);
+    }
+}
+
+static void esp_flush_send(void)
+{
+    int id = esp.sending, result;
+
+    if (!esp.connected[id]) {
+        result = -1;
+    } else if (esp.udp[id]) {
+        result = esp_socket_udp_send(id, esp.payload, esp.wanted,
+                                     esp.send_host, esp.send_port);
+    } else {
+        result = esp_socket_send(id, esp.payload, esp.sent, esp.wanted - esp.sent);
+        if (result < 0) {
+            esp_disconnect(id);
+        } else {
+            esp.sent += result;
+            result = esp.sent == esp.wanted;
+        }
+    }
+    if (result != 0) {
+        esp_text(result > 0 ? "SEND OK\r\n" : "SEND FAIL\r\n");
+        esp.sending = -1;
+    }
+}
+
+static void esp_receive(int id)
+{
+    unsigned char data[ESP_PAYLOAD_MAX], peer[6];
+    bool udp = esp.udp[id];
+    int size;
+
+    if (esp_room() < ESP_REPLY_SPACE + (udp ? ESP_PAYLOAD_MAX : ESP_TCP_READ) + 64)
+        return;
+    if (udp) {
+        size = esp_socket_udp_receive(id, data, peer);
+    } else {
+        size = esp_socket_receive(id, data, ESP_TCP_READ);
+    }
+
+    if (size < 0) {
+        esp_disconnect(id);
+        if (esp.sending == id) {
+            esp_text("SEND FAIL\r\n");
+            esp.sending = -1;
+        }
+        return;
+    }
+    if (!size) return;
+    if (udp) --size; /* UDP transport represents an empty datagram as 1. */
+
+    esp_text("\r\n+IPD,");
+    esp_number(id);
+    esp_put(',');
+    esp_number(size);
+    if (udp && esp.ip_info) {
+        esp_text(",\"");
+        for (int i = 0; i < 4; ++i) {
+            if (i) esp_put('.');
+            esp_number(peer[i]);
+        }
+        esp_text("\",");
+        esp_number(256 * peer[4] + peer[5]);
+    }
+    esp_put(':');
+    for (int i = 0; i < size; ++i) esp_put(data[i]);
+}
+
+static void esp_cycle(void)
+{
+    if (esp_room() >= ESP_REPLY_SPACE) {
+        int id = esp_socket_accept();
+        if (id >= 0) {
+            esp.connected[id] = esp.accepted[id] = true;
+            esp.udp[id] = false;
+            esp_event(id, "CONNECT");
+        }
+        if (esp.opening >= 0) {
+            id = esp.opening;
+            int result = esp_socket_poll(id);
+            if (result > 0) {
+                esp.connected[id] = true;
+                esp_event(id, "CONNECT");
+                esp_reply(true);
+            } else if (result < 0) {
+                esp_socket_close(id);
+                esp_reply(false);
+            }
+            if (result != 0) esp.opening = -1;
+        }
+        if (esp.sending >= 0 && esp.collected == esp.wanted) esp_flush_send();
+    }
+    for (int id = 0; id < ESP_LINKS; ++id)
+        if (esp.connected[id]) esp_receive(id);
+}
+
+static bool esp_tx_ready(void)
+{
+    return esp_room() >= ESP_REPLY_SPACE && esp.opening < 0 &&
+           (esp.sending < 0 || esp.collected < esp.wanted);
+}
+
+static unsigned int esp_at_status(void)
+{
+    esp_cycle();
+    return (esp.count ? 1u : 0u) | (esp_tx_ready() ? 2u : 0u);
+}
+
+static unsigned int esp_at_read(void)
+{
+    esp_cycle();
+    if (!esp.count) return 0;
+    unsigned char byte = esp.rx[esp.head];
+    esp.head = (esp.head + 1) % sizeof esp.rx;
+    --esp.count;
+    return byte;
+}
+
+static void esp_at_write(unsigned char byte)
+{
+    /* A prior status read can report ready. Do not poll sockets again
+       before committing that byte, lest a new packet fill the RX queue. */
+    if (!esp_tx_ready()) return;
+    if (esp.sending >= 0) {
+        esp.payload[esp.collected++] = byte;
+    } else if (byte == '\n') {
+        if (esp.discard) {
+            esp_reply(false);
+            esp.discard = false;
+            esp.length = 0;
+        } else {
+            if (esp.length && esp.line[esp.length - 1] == '\r') --esp.length;
+            esp_execute();
+        }
+    } else if (!esp.discard) {
+        if ((byte < ' ' && byte != '\r') || esp.length == sizeof esp.line - 1)
+            esp.discard = true;
+        else
+            esp.line[esp.length++] = byte;
+    }
+}
+
 //-------------------------------------------------------------------
 int input_char(int c, EvtType typ, int X, int Y)
 {
@@ -485,6 +1259,9 @@ if(DISS)
                     write(write_fd, &data, 1);
                     break;
 
+                case ESP_AT_TX:
+                    esp_at_write((unsigned char)data);
+                    break;
                 case 0xE2F00000: /* frame buffer port */
                 {
                     fb_port = data;
@@ -671,6 +1448,9 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
                         data = input_event[input_read_ptr].Y;
                     return (data);
                 }
+                case ESP_AT_RX: return esp_at_read();
+                case ESP_AT_STATUS: return esp_at_status();
+                case HOST_SECONDS: return (unsigned int)time(NULL);
                 case 0xE2F00000: /* frame buffer port */
                 {
                     return fb_port;
@@ -831,10 +1611,10 @@ void handle_disk(unsigned int wr)
         return;
     fd = disk_fd[disk_ide_id];
 
-    off = ((off_t)(disk_offset_high) << 32) + disk_offset_low;
-    if (off >= disk_size[disk_ide_id])
+    uint64_t offset = ((uint64_t)disk_offset_high << 32) | disk_offset_low;
+    if (disk_size[disk_ide_id] < 0 || offset > (uint64_t)disk_size[disk_ide_id])
         return;
-    off = lseek(fd, off, SEEK_SET);
+    off = lseek(fd, (off_t)offset, SEEK_SET);
     if (-1 == off)
         return;
 
@@ -990,7 +1770,7 @@ int execute ( void )
     if (active_exception && (pc & 0xFFFFFFF0) == 0xFFFFFFF0)
         pc = return_from_exception();
 
-    if (systick_pending && !active_exception)
+    if (systick_pending && !active_exception && !primask)
     {
         unsigned int vector = fetch32(4 * EXCEPTION_SYSTICK);
 
@@ -2237,11 +3017,11 @@ if(DISS)
         return(1);
     }
 
-    //CPS
-    if((inst&0xFFE8)==0xB660)
-    {
-if(DISS) fprintf(stderr,"cps   TODO\n");
-        return(1);
+    // CPSIE i / CPSID i change the interrupt mask in thread or handler mode.
+    if ((inst & 0xFFEF) == 0xB662) {
+        primask = (inst & 0x10) != 0;
+        if (DISS) fprintf(stderr, "cps%s i", primask ? "id" : "ie");
+        goto Return;
     }
 
     //REV
@@ -2665,6 +3445,7 @@ int reset ( void )
     /*--------------------------------*/
     active_exception=0;
     systick_pending=0;
+    primask=0;
     cpsr=0;
     reg_event=0;
     waiting=NoWait;
@@ -2728,6 +3509,8 @@ int run ( void )
 {
     int input_open = 1;
 
+    esp_sockets_init();
+    esp_reset();
     reset();
     while(1)
     {
@@ -2738,14 +3521,15 @@ int run ( void )
 
         if (waiting != NoWait) {
             // Queued console input can wake WFI without a guest IRQ vector.
-            int wake = (!active_exception && systick_pending) ||
+            int irq_wakes = !active_exception && (!primask || waiting == WaitForInt);
+            int wake = (irq_wakes && systick_pending) ||
                        (waiting == WaitForInt && input_read_ptr != input_write_ptr);
 
             if (waiting == WaitForEvt && reg_event) {
                 reg_event = 0;
                 wake = 1;
             }
-            if (!wake && !active_exception &&
+            if (!wake && irq_wakes &&
                 (systick_ctrl & (SYSTICK_ENABLE | SYSTICK_TICKINT)) ==
                 (SYSTICK_ENABLE | SYSTICK_TICKINT) &&
                 (systick_count != 0 || systick_reload != 0)) {
@@ -2771,6 +3555,7 @@ int run ( void )
         if (execute()) break;
         advance_systick(clks - previous_clks);
     }
+    esp_close();
     dump_counters();
     return(0);
 }
