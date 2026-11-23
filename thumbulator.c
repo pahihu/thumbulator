@@ -78,7 +78,15 @@ unsigned short ram[RAMSIZE>>1];
 #define XPSR_STACK_ALIGN (1u<<9)
 
 #define EXCEPTION_HARDFAULT 3
+#define EXCEPTION_SVC 11
 #define EXCEPTION_SYSTICK 15
+
+#define CONTROL_SPSEL 2u
+#define EXC_RETURN_HANDLER 0xFFFFFFF1u
+#define EXC_RETURN_THREAD_MSP 0xFFFFFFF9u
+#define EXC_RETURN_THREAD_PSP 0xFFFFFFFDu
+#define SHPR2 0xE000ED1Cu
+#define SHPR3 0xE000ED20u
 
 unsigned int vcdcount;
 unsigned int output_vcd = 0;
@@ -100,6 +108,8 @@ unsigned int systick_count;
 unsigned int systick_calibrate;
 static int systick_pending;
 static int primask;
+static unsigned int psp, control;
+static unsigned int shpr2, shpr3;
 
 void handle_disk(unsigned int wr);
 
@@ -119,7 +129,12 @@ unsigned int fb_port;
 unsigned int halfadd;
 unsigned int cpsr;
 unsigned int active_exception;
-unsigned int reg_norm[16]; //normal execution mode, do not have a thread mode
+unsigned int reg_norm[16]; // r13 stores MSP
+
+static int using_psp(void)
+{
+    return !active_exception && (control & CONTROL_SPSEL);
+}
 
 unsigned int reg_event; //event register
 typedef enum {NoWait=0,WaitForEvt,WaitForInt} WaitType;
@@ -1123,7 +1138,7 @@ void dump_registers(void) {
             case 15: fprintf(stderr, "  pc: "); break;
             default: fprintf(stderr, " %sr%d: ", i < 10 ? " " : "", i); break;
         }
-        fprintf(stderr, "%08x   ", reg_norm[i]);
+        fprintf(stderr, "%08x   ", i == 13 && using_psp() ? psp : reg_norm[i]);
         if (0 == ((i+1) % 4)) fprintf(stderr,"\n");
     }
     fprintf(stderr,"\n");
@@ -1194,6 +1209,7 @@ if(DBUG) fprintf(stderr,"0x%08X\n",data);
                 if(addr==0x00000000) return(data);
                 if(addr==0x00000004) return(data);
                 if(addr==4*EXCEPTION_HARDFAULT) return(data);
+                if(addr==4*EXCEPTION_SVC) return(data);
                 if(addr==4*EXCEPTION_SYSTICK) return(data);
                 fprintf(stderr,"\nfetch32(0x%08X), abort pc = 0x%04X\n",addr,read_register(15));
                 exit(1);
@@ -1287,6 +1303,12 @@ if(DISS)
                     handle_disk (data);
                     break;
                 }
+                case SHPR2:
+                    shpr2 = data & 0xC0000000u;
+                    break;
+                case SHPR3:
+                    shpr3 = data & 0xC0C00000u;
+                    break;
                 case 0xE000E010:
                 {
                     unsigned int old;
@@ -1489,6 +1511,8 @@ if (DBUG) fprintf(stderr, "%08x\n", data);
                     data=systick_calibrate;
                     return(data);
                 }
+                case SHPR2: return shpr2;
+                case SHPR3: return shpr3;
                 case 0xE000ED00:
                 {
                     data=cpuid;
@@ -1509,7 +1533,7 @@ unsigned int read_register ( unsigned int reg )
     reg&=0xF;
 if(DBUG) fprintf(stderr,"read_register(%u)=",reg);
 if(DBUGREG) fprintf(stderr,"read_register(%u)=",reg);
-    data=reg_norm[reg];
+    data = reg == 13 && using_psp() ? psp : reg_norm[reg];
     if(reg==15)
     {
         if(data&1)
@@ -1529,7 +1553,8 @@ void write_register ( unsigned int reg, unsigned int data )
 if(DBUG) fprintf(stderr,"write_register(%u,0x%08X)\n",reg,data);
 if(DBUGREG) fprintf(stderr,"write_register(%u,0x%08X)\n",reg,data);
     if(reg==15) data&=~1;
-    reg_norm[reg]=data;
+    if (reg == 13 && using_psp()) psp = data;
+    else reg_norm[reg] = data;
 
 if(output_vcd)
 {
@@ -1690,6 +1715,57 @@ static void advance_systick(unsigned long ticks)
     systick_count = (period - (ticks - systick_count) % period) % period;
 }
 
+static unsigned int read_special(unsigned int sysm)
+{
+    const unsigned int flags = cpsr & 0xF0000000u;
+    switch (sysm) {
+    case 0: case 2: return flags;                    // APSR, EAPSR
+    case 1: case 3: return flags | active_exception; // IAPSR, xPSR
+    case 5: case 7: return active_exception;         // IPSR, IEPSR
+    case 8: return reg_norm[13];                     // MSP
+    case 9: return psp;
+    case 16: return primask;
+    case 20: return active_exception ? 0 : control; // Cortex-M0 implements SPSEL only
+    default: return 0;                              // EPSR and reserved encodings
+    }
+}
+
+static void write_special(unsigned int sysm, unsigned int value)
+{
+    switch (sysm) {
+    case 0: case 1: case 2: case 3:
+        cpsr = (cpsr & 0x0FFFFFFFu) | (value & 0xF0000000u);
+        break;
+    case 8: reg_norm[13] = value & ~3u; break;
+    case 9: psp = value & ~3u; break;
+    case 16: primask = value & 1u; break;
+    case 20:
+        if (!active_exception) control = value & CONTROL_SPSEL;
+        break;
+    }
+}
+
+static int exception_priority(unsigned int exception)
+{
+    switch (exception) {
+    case EXCEPTION_HARDFAULT: return -1;
+    case EXCEPTION_SVC: return shpr2 >> 30;
+    case EXCEPTION_SYSTICK: return shpr3 >> 30;
+    default: return 4; // Thread mode
+    }
+}
+
+static int can_take_exception(unsigned int exception)
+{
+    return !primask && exception_priority(exception) < exception_priority(active_exception);
+}
+
+static int valid_vector(unsigned int vector)
+{
+    unsigned int region = vector & 0xF0000000u;
+    return (vector & 1) && (region == ROM_START || region == RAM_START);
+}
+
 static unsigned int enter_exception(unsigned int number, unsigned int return_address,
                                     unsigned int vector)
 {
@@ -1709,15 +1785,17 @@ static unsigned int enter_exception(unsigned int number, unsigned int return_add
     write32(sp + 28, xpsr);
     clks += 16;
     write_register(13, sp);
-    write_register(14, active_exception ? 0xFFFFFFF1 : 0xFFFFFFF9);
+    write_register(14, active_exception ? EXC_RETURN_HANDLER :
+                   using_psp() ? EXC_RETURN_THREAD_PSP : EXC_RETURN_THREAD_MSP);
     active_exception = number;
     reg_event = 1;
     return (vector & ~1u) + 2; // internal PC points two bytes past the next fetch
 }
 
-static unsigned int return_from_exception(void)
+static unsigned int return_from_exception(unsigned int exc_return)
 {
-    unsigned int sp = read_register(13);
+    unsigned int *stack = exc_return == EXC_RETURN_THREAD_PSP ? &psp : &reg_norm[13];
+    unsigned int sp = *stack;
     unsigned int pc = read32(sp + 24);
     unsigned int xpsr = read32(sp + 28);
 
@@ -1727,7 +1805,9 @@ static unsigned int return_from_exception(void)
     write_register(3, read32(sp + 12));
     write_register(12, read32(sp + 16));
     write_register(14, read32(sp + 20));
-    write_register(13, sp + 32 + ((xpsr & XPSR_STACK_ALIGN) ? 4 : 0));
+    *stack = sp + 32 + ((xpsr & XPSR_STACK_ALIGN) ? 4 : 0);
+    if (exc_return != EXC_RETURN_HANDLER)
+        control = exc_return == EXC_RETURN_THREAD_PSP ? CONTROL_SPSEL : 0;
     clks += 16;
     cpsr = xpsr & XPSR_FLAGS;
     active_exception = xpsr & 0x1FF;
@@ -1735,7 +1815,7 @@ static unsigned int return_from_exception(void)
     return (pc & ~1u) + 2;
 }
 
-static int undefined_instruction(unsigned int address)
+static int hardfault(const char *reason, unsigned int address)
 {
     unsigned int vector;
 
@@ -1743,10 +1823,9 @@ static int undefined_instruction(unsigned int address)
         fprintf(stderr, "HardFault lockup at 0x%08X\n", address);
         return 1;
     }
-    vector = fetch32(4 * EXCEPTION_HARDFAULT);
-    if (!(vector & 1) ||
-        ((vector & 0xF0000000) != ROM_START && (vector & 0xF0000000) != RAM_START)) {
-        fprintf(stderr, "UDF at 0x%08X: invalid HardFault vector 0x%08X\n", address, vector);
+    vector = fetch32(entry + 4 * EXCEPTION_HARDFAULT);
+    if (!valid_vector(vector)) {
+        fprintf(stderr, "%s at 0x%08X: invalid HardFault vector 0x%08X\n", reason, address, vector);
         return 1;
     }
     write_register(15, enter_exception(EXCEPTION_HARDFAULT, address, vector));
@@ -1767,12 +1846,17 @@ int execute ( void )
     char *sym = NULL;
 
     pc=read_register(15);
-    if (active_exception && (pc & 0xFFFFFFF0) == 0xFFFFFFF0)
-        pc = return_from_exception();
+    if (active_exception && (pc & 0xFFFFFFF0u) == 0xFFFFFFF0u) {
+        unsigned int exc_return = (pc - 2) | 1u;
+        if (exc_return != EXC_RETURN_HANDLER && exc_return != EXC_RETURN_THREAD_MSP &&
+            exc_return != EXC_RETURN_THREAD_PSP)
+            return hardfault("Invalid exception return", pc);
+        pc = return_from_exception(exc_return);
+    }
 
-    if (systick_pending && !active_exception && !primask)
+    if (systick_pending && can_take_exception(EXCEPTION_SYSTICK))
     {
-        unsigned int vector = fetch32(4 * EXCEPTION_SYSTICK);
+        unsigned int vector = fetch32(entry + 4 * EXCEPTION_SYSTICK);
 
         systick_pending = 0;
         systick_ints++;
@@ -1812,6 +1896,25 @@ if(output_vcd)
         clks++;
         if (DISS) fprintf(stderr, "0x%04X ", second);
 
+        if (inst == 0xF3EF && (second & 0xF000) == 0x8000) {
+            rd = (second >> 8) & 15;
+            if (rd == 13 || rd == 15) goto ErrOut;
+            if (DISS) fprintf(stderr, "mrs r%u, sysm=%u", rd, second & 255);
+            write_register(rd, read_special(second & 255));
+            write_register(15, pc + 2);
+            clks += 2;
+            goto Return;
+        }
+        if ((inst & 0xFFF0) == 0xF380 && (second & 0xFF00) == 0x8800) {
+            rn = inst & 15;
+            if (rn == 13 || rn == 15) goto ErrOut;
+            if (DISS) fprintf(stderr, "msr sysm=%u, r%u", second & 255, rn);
+            write_special(second & 255, read_register(rn));
+            write_register(15, pc + 2);
+            clks += 2;
+            goto Return;
+        }
+
         if (inst == 0xF3BF) {
             switch (second & 0xFFF0) {
             case 0x8F40: barrier = "dsb"; break;
@@ -1828,7 +1931,7 @@ if(output_vcd)
         }
         if ((inst & 0xFFF0) == 0xF7F0 && (second & 0xF000) == 0xA000) {
             if (DISS) fprintf(stderr, "udf.w #%u\n", ((inst & 0xF) << 12) | (second & 0xFFF));
-            return undefined_instruction(pc - 4);
+            return hardfault("UDF", pc - 4);
         }
         if ((inst & 0xF800) == 0xF000 && (second & 0xD000) == 0xD000) {
             unsigned int sign = (inst >> 10) & 1;
@@ -3238,7 +3341,7 @@ case 0xD000:
 
     if ((inst & 0xFF00) == 0xDE00) {
         if (DISS) fprintf(stderr, "udf #%u\n", inst & 0xFF);
-        return undefined_instruction(pc - 4);
+        return hardfault("UDF", pc - 4);
     }
 
 
@@ -3391,22 +3494,17 @@ if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
         }
     }
 
-    //SWI
-    if((inst&0xFF00)==0xDF00)
-    {
-        rb=inst&0xFF;
-if(DISS) fprintf(stderr,"swi   0x%02X",rb);
-
-        if((inst&0xFF)==0xCC)
-        {
-            write_register(0,cpsr);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\n\nswi 0x%02X\n",rb);
-            return(1);
-        }
+    // SVC stacks the following instruction as its return address.
+    if ((inst & 0xFF00) == 0xDF00) {
+        unsigned int vector;
+        if (DISS) fprintf(stderr, "svc #%u", inst & 255);
+        if (!can_take_exception(EXCEPTION_SVC))
+            return hardfault("SVCall priority escalation", pc - 2);
+        vector = fetch32(entry + 4 * EXCEPTION_SVC);
+        if (!valid_vector(vector))
+            return hardfault("Invalid SVCall vector", pc - 2);
+        write_register(15, enter_exception(EXCEPTION_SVC, pc - 2, vector));
+        goto Return;
     }
 goto ErrOut;
 case 0xE000:
@@ -3457,6 +3555,10 @@ int reset ( void )
     active_exception=0;
     systick_pending=0;
     primask=0;
+    psp=0;
+    control=0;
+    shpr2=0;
+    shpr3=0;
     cpsr=0;
     reg_event=0;
     waiting=NoWait;
@@ -3532,7 +3634,9 @@ int run ( void )
 
         if (waiting != NoWait) {
             // Queued console input can wake WFI without a guest IRQ vector.
-            int irq_wakes = !active_exception && (!primask || waiting == WaitForInt);
+            int irq_wakes = waiting == WaitForInt ?
+                exception_priority(EXCEPTION_SYSTICK) < exception_priority(active_exception) :
+                can_take_exception(EXCEPTION_SYSTICK);
             int wake = (irq_wakes && systick_pending) ||
                        (waiting == WaitForInt && input_read_ptr != input_write_ptr);
 
