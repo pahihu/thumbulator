@@ -2924,6 +2924,17 @@ if(DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
         goto Return;
     }
 
+    //SXTB and SXTH
+    if((inst&0xFF80)==0xB200)
+    {
+        rd=inst&7;
+        rm=(inst>>3)&7;
+        rb=(inst&0x40)? 0x80 : 0x8000;
+        rc=read_register(rm)&((rb<<1)-1);
+        write_register(rd,(rc^rb)-rb);
+        goto Return;
+    }
+
     //UXTH
     if((inst&0xFFC0)==0xB280)
     {
