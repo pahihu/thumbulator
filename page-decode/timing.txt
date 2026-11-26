@@ -1,0 +1,36 @@
+ 1 stock  wall 3.1836 s CPU 3.1738 s
+ 1 split1024 wall 2.9310 s CPU 2.9192 s
+ 1 page64 wall 2.1748 s CPU 2.1645 s
+ 1 page128 wall 1.9281 s CPU 1.9205 s
+ 2 split1024 wall 2.7428 s CPU 2.7364 s
+ 2 page64 wall 1.8936 s CPU 1.8874 s
+ 2 page128 wall 1.8993 s CPU 1.8921 s
+ 2 stock  wall 3.1452 s CPU 3.1367 s
+ 3 page64 wall 1.8928 s CPU 1.8897 s
+ 3 page128 wall 1.8885 s CPU 1.8855 s
+ 3 stock  wall 2.9473 s CPU 2.9442 s
+ 3 split1024 wall 2.5111 s CPU 2.5082 s
+ 4 page128 wall 1.8554 s CPU 1.8525 s
+ 4 stock  wall 3.0089 s CPU 3.0043 s
+ 4 split1024 wall 2.5918 s CPU 2.5778 s
+ 4 page64 wall 1.8525 s CPU 1.8369 s
+ 5 page128 wall 1.8408 s CPU 1.8287 s
+ 5 page64 wall 1.9597 s CPU 1.9479 s
+ 5 split1024 wall 2.6346 s CPU 2.6186 s
+ 5 stock  wall 2.9383 s CPU 2.9198 s
+ 6 stock  wall 3.0086 s CPU 2.9938 s
+ 6 page128 wall 1.9271 s CPU 1.9203 s
+ 6 page64 wall 1.8899 s CPU 1.8850 s
+ 6 split1024 wall 2.5720 s CPU 2.5587 s
+ 7 split1024 wall 2.5639 s CPU 2.5497 s
+ 7 stock  wall 3.2944 s CPU 3.2589 s
+ 7 page128 wall 1.9532 s CPU 1.9362 s
+ 7 page64 wall 1.8491 s CPU 1.8280 s
+ 8 page64 wall 1.8698 s CPU 1.8574 s
+ 8 split1024 wall 2.5990 s CPU 2.5797 s
+ 8 stock  wall 2.9456 s CPU 2.9327 s
+ 8 page128 wall 1.8481 s CPU 1.8385 s
+stock cpu_seconds=2.999027 wall_seconds=3.008764
+split1024 cpu_seconds=2.578764 wall_seconds=2.595373
+page64 cpu_seconds=1.886204 wall_seconds=1.891333
+page128 cpu_seconds=1.888826 wall_seconds=1.893895

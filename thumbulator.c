@@ -1144,8 +1144,46 @@ void dump_registers(void) {
     fprintf(stderr,"\n");
 }       
 //-------------------------------------------------------------------
+#ifndef CODE_PAGE_BYTES
+#define CODE_PAGE_BYTES 128
+#endif
+#if CODE_PAGE_BYTES != 64 && CODE_PAGE_BYTES != 128
+#error CODE_PAGE_BYTES must be 64 or 128
+#endif
+
+enum { PAGE_SLOTS = CODE_PAGE_BYTES / 2, PAGE_COUNT = ROMSIZE / CODE_PAGE_BYTES };
+enum { NO_TRACE_SUFFIX = 2 };
+
+typedef struct {
+    uint32_t operand; // Immediate, register list, or third register
+    uint8_t reg1, reg2;
+    uint8_t width; // Fetched halfwords. Zero marks a slot on a cold page.
+} DecodedInstruction;
+
+typedef int (*InstructionExecutor)(unsigned int pc, const DecodedInstruction *decoded);
+
+typedef struct {
+    InstructionExecutor func[PAGE_SLOTS];
+    DecodedInstruction decoded[PAGE_SLOTS];
+} CodePage;
+
+// One directory entry per physical ROM page. Pages live until the run ends.
+static CodePage *code_pages[PAGE_COUNT];
+
+#if PAGE_STATS
+static unsigned long pages_decoded, page_instructions, single_instructions;
+#define COUNT_PAGE_INSTRUCTION() (++page_instructions)
+#else
+#define COUNT_PAGE_INSTRUCTION() ((void)0)
+#endif
+
 void dump_counters ( void )
 {
+#if PAGE_STATS
+    fprintf(stderr, "pages decoded=%lu page instructions=%lu single instructions=%lu "
+            "page bytes=%zu directory bytes=%zu\n", pages_decoded,
+            page_instructions, single_instructions, sizeof(CodePage), sizeof(code_pages));
+#endif
     printf("\n\n");
     printf("clocks       %lu\n",clks);
     printf("instructions %lu (CPI %.2f)\n",instructions,(clks + 0.0)/instructions);
@@ -1832,19 +1870,2619 @@ static int hardfault(const char *reason, unsigned int address)
     return 0;
 }
 
+// Some instructions supply their own trace ending, even when they continue.
+static int without_trace_suffix(int result)
+{
+    return DISS && result == 0 ? NO_TRACE_SUFFIX : result;
+}
+
+static int execute_mrs(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rd = decoded->reg1;
+    unsigned int sysm = decoded->operand;
+
+    if (DISS) fprintf(stderr, "mrs r%u, sysm=%u", rd, sysm);
+    write_register(rd, read_special(sysm));
+    write_register(15, pc + 2);
+    clks += 2;
+    return 0;
+}
+
+static InstructionExecutor decode_mrs(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr >> 24) & 15;
+    decoded->operand = (instr >> 16) & 255;
+    return execute_mrs;
+}
+
+static int execute_msr(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rn = decoded->reg1;
+    unsigned int sysm = decoded->operand;
+
+    if (DISS) fprintf(stderr, "msr sysm=%u, r%u", sysm, rn);
+    write_special(sysm, read_register(rn));
+    write_register(15, pc + 2);
+    clks += 2;
+    return 0;
+}
+
+static InstructionExecutor decode_msr(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr & 15;
+    decoded->operand = (instr >> 16) & 255;
+    return execute_msr;
+}
+
+static int execute_dsb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    // Memory accesses complete synchronously and there is no prefetch.
+    if (DISS) fprintf(stderr, "dsb");
+    write_register(15, pc + 2);
+    clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_dsb(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_dsb;
+}
+
+static int execute_dmb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    // Memory accesses complete synchronously and there is no prefetch.
+    if (DISS) fprintf(stderr, "dmb");
+    write_register(15, pc + 2);
+    clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_dmb(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_dmb;
+}
+
+static int execute_isb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    // Memory accesses complete synchronously and there is no prefetch.
+    if (DISS) fprintf(stderr, "isb");
+    write_register(15, pc + 2);
+    clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_isb(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_isb;
+}
+
+static int execute_udf_w(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    if (DISS) fprintf(stderr, "udf.w #%u\n", rb);
+    return without_trace_suffix(hardfault("UDF", pc - 4));
+}
+
+static InstructionExecutor decode_udf_w(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 15) << 12) | ((instr >> 16) & 0xFFF);
+    return execute_udf_w;
+}
+
+static int execute_bl(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int offset = decoded->operand;
+
+    if (DISS) fprintf(stderr, "bl    0x%08X", pc + offset);
+    write_register(14, pc | 1);
+    write_register(15, pc + offset + 2);
+    clks += 2;
+    return 0;
+}
+
+static InstructionExecutor decode_bl(unsigned int instr, DecodedInstruction *decoded)
+{
+    unsigned int second = instr >> 16;
+    unsigned int sign = (instr >> 10) & 1;
+    unsigned int i1 = ((second >> 13) & 1) ^ sign ^ 1;
+    unsigned int i2 = ((second >> 11) & 1) ^ sign ^ 1;
+    unsigned int offset = (i1 << 23) | (i2 << 22) |
+                          ((instr & 0x3FF) << 12) | ((second & 0x7FF) << 1);
+
+    if (sign) offset |= 0xFF000000u;
+    decoded->operand = offset;
+    return execute_bl;
+}
+
+static int execute_lsl_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"lsls  r%u,r%u,#0x%X",rd,rm,rb);
+    rc=read_register(rm);
+    if(rb==0)
+    {
+        //if immed_5 == 0
+        // Carry is unchanged.
+        //result not shifted
+    }
+    else
+    {
+        //else immed_5 > 0
+        do_cflag_bit(rc&(1<<(32-rb)));
+        rc<<=rb;
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_lsl_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = (instr>>6)&0x1F;
+    return execute_lsl_imm;
+}
+
+static int execute_lsr_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"lsrs  r%u,r%u,#0x%X",rd,rm,rb);
+    rc=read_register(rm);
+    if(rb==0)
+    {
+        do_cflag_bit(rc&0x80000000);
+        rc=0;
+    }
+    else
+    {
+        do_cflag_bit(rc&(1<<(rb-1)));
+        rc>>=rb;
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_lsr_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = (instr>>6)&0x1F;
+    return execute_lsr_imm;
+}
+
+static int execute_asr_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"asrs  r%u,r%u,#0x%X",rd,rm,rb);
+    rc=read_register(rm);
+    if(rb==0)
+    {
+        if(rc&0x80000000)
+        {
+            do_cflag_bit(1);
+            rc=MINUS_ONE;
+        }
+        else
+        {
+            do_cflag_bit(0);
+            rc=0;
+        }
+    }
+    else
+    {
+        do_cflag_bit(rc&(1<<(rb-1)));
+        ra=rc&0x80000000;
+        rc>>=rb;
+        if(ra) //asr, sign is shifted in
+        {
+            rc|=(MINUS_ONE)<<(32-rb);
+        }
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_asr_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = (instr>>6)&0x1F;
+    return execute_asr_imm;
+}
+
+static int execute_add_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"adds  r%u,r%u,r%u",rd,rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra+rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,rb,0);
+    do_vflag(ra,rb,0);
+    return 0;
+}
+
+static InstructionExecutor decode_add_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_add_reg;
+}
+
+static int execute_sub_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra-rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_sub_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_sub_reg;
+}
+
+static int execute_add_imm3(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"adds  r%u,r%u,#0x%X",rd,rn,rb);
+    ra=read_register(rn);
+    rc=ra+rb;
+
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,rb,0);
+    do_vflag(ra,rb,0);
+    return 0;
+}
+
+static InstructionExecutor decode_add_imm3(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&7;
+    decoded->reg2 = (instr>>3)&7;
+    decoded->operand = (instr>>6)&7;
+    return execute_add_imm3;
+}
+
+static int execute_mov_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->operand;
+
+    if (DISS) fprintf(stderr,"movs  r%u,r%u",rd,rn);
+    rc=read_register(rn);
+
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag_bit(0);
+    do_vflag_bit(0);
+    return 0;
+}
+
+static InstructionExecutor decode_mov_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&7;
+    decoded->operand = (instr>>3)&7;
+    return execute_mov_reg;
+}
+
+static int execute_sub_imm3(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"subs  r%u,r%u,#0x%X",rd,rn,rb);
+    ra=read_register(rn);
+    rc=ra-rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_sub_imm3(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&7;
+    decoded->reg2 = (instr>>3)&7;
+    decoded->operand = (instr>>6)&7;
+    return execute_sub_imm3;
+}
+
+static int execute_mov_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"movs  r%u,#0x%02X",rd,rb);
+    write_register(rd,rb);
+    do_nflag(rb);
+    do_zflag(rb);
+    return 0;
+}
+
+static InstructionExecutor decode_mov_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = instr&0xFF;
+    return execute_mov_imm;
+}
+
+static int execute_cmp_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"cmp   r%u,#0x%02X",rn,rb);
+    ra=read_register(rn);
+    rc=ra-rb;
+
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_cmp_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = instr&0xFF;
+    return execute_cmp_imm;
+}
+
+static int execute_add_imm8(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"adds  r%u,#0x%02X",rd,rb);
+    ra=read_register(rd);
+    rc=ra+rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,rb,0);
+    do_vflag(ra,rb,0);
+    return 0;
+}
+
+static InstructionExecutor decode_add_imm8(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x7;
+    decoded->operand = instr&0xFF;
+    return execute_add_imm8;
+}
+
+static int execute_sub_imm8(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"subs  r%u,#0x%02X",rd,rb);
+    ra=read_register(rd);
+    rc=ra-rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_sub_imm8(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = instr&0xFF;
+    return execute_sub_imm8;
+}
+
+static int execute_and(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ands  r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra&rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_and(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_and;
+}
+
+static int execute_eor(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"eors  r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra^rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_eor(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_eor;
+}
+
+static int execute_lsl_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rs = decoded->operand;
+
+    if (DISS) fprintf(stderr,"lsls  r%u,r%u",rd,rs);
+    rc=read_register(rd);
+    rb=read_register(rs);
+    rb&=0xFF;
+    if(rb==0)
+    {
+    }
+    else if(rb<32)
+    {
+        do_cflag_bit(rc&(1<<(32-rb)));
+        rc<<=rb;
+    }
+    else if(rb==32)
+    {
+        do_cflag_bit(rc&1);
+        rc=0;
+    }
+    else
+    {
+        do_cflag_bit(0);
+        rc=0;
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_lsl_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->operand = (instr>>3)&0x07;
+    return execute_lsl_reg;
+}
+
+static int execute_lsr_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rs = decoded->operand;
+
+    if (DISS) fprintf(stderr,"lsrs  r%u,r%u",rd,rs);
+    rc=read_register(rd);
+    rb=read_register(rs);
+    rb&=0xFF;
+    if(rb==0)
+    {
+    }
+    else if(rb<32)
+    {
+        do_cflag_bit(rc&(1<<(rb-1)));
+        rc>>=rb;
+    }
+    else if(rb==32)
+    {
+        do_cflag_bit(rc&0x80000000);
+        rc=0;
+    }
+    else
+    {
+        do_cflag_bit(0);
+        rc=0;
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_lsr_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->operand = (instr>>3)&0x07;
+    return execute_lsr_reg;
+}
+
+static int execute_asr_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rs = decoded->operand;
+
+    if (DISS) fprintf(stderr,"asrs  r%u,r%u",rd,rs);
+    rc=read_register(rd);
+    rb=read_register(rs);
+    rb&=0xFF;
+    if(rb==0)
+    {
+    }
+    else if(rb<32)
+    {
+        do_cflag_bit(rc&(1<<(rb-1)));
+        ra=rc&0x80000000;
+        rc>>=rb;
+        if(ra) //asr, sign is shifted in
+        {
+            rc|=(MINUS_ONE)<<(32-rb);
+        }
+    }
+    else
+    {
+        if(rc&0x80000000)
+        {
+            do_cflag_bit(1);
+            rc=(MINUS_ONE);
+        }
+        else
+        {
+            do_cflag_bit(0);
+            rc=0;
+        }
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_asr_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->operand = (instr>>3)&0x07;
+    return execute_asr_reg;
+}
+
+static int execute_adc(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"adc   r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra+rb;
+    if(cpsr&CPSR_C) rc++;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    if(cpsr&CPSR_C) { do_cflag(ra,rb,1); do_vflag(ra,rb,1); }
+    else            { do_cflag(ra,rb,0); do_vflag(ra,rb,0); }
+    return 0;
+}
+
+static InstructionExecutor decode_adc(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->operand = (instr>>3)&0x07;
+    return execute_adc;
+}
+
+static int execute_sbc(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"sbc   r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra-rb;
+    if(!(cpsr&CPSR_C)) rc--;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    if(cpsr&CPSR_C)
+    {
+        do_cflag(ra,~rb,1);
+        do_vflag(ra,~rb,1);
+    }
+    else
+    {
+        do_cflag(ra,~rb,0);
+        do_vflag(ra,~rb,0);
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_sbc(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_sbc;
+}
+
+static int execute_ror(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rs = decoded->operand;
+
+    if (DISS) fprintf(stderr,"rors  r%u,r%u",rd,rs);
+    rc=read_register(rd);
+    ra=read_register(rs);
+    ra&=0xFF;
+    if(ra==0)
+    {
+    }
+    else
+    {
+        ra&=0x1F;
+        if(ra==0)
+        {
+            do_cflag_bit(rc&0x80000000);
+        }
+        else
+        {
+            do_cflag_bit(rc&(1<<(ra-1)));
+            rb=rc<<(32-ra);
+            rc>>=ra;
+            rc|=rb;
+        }
+    }
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ror(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_ror;
+}
+
+static int execute_tst(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra&rb;
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_tst(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_tst;
+}
+
+static int execute_neg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"negs  r%u,r%u",rd,rm);
+    ra=read_register(rm);
+    rc=0-ra;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(0,~ra,1);
+    do_vflag(0,~ra,1);
+    return 0;
+}
+
+static InstructionExecutor decode_neg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_neg;
+}
+
+static int execute_cmp_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra-rb;
+
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_cmp_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_cmp_reg;
+}
+
+static int execute_cmn(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"cmns  r%u,r%u",rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra+rb;
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,rb,0);
+    do_vflag(ra,rb,0);
+    return 0;
+}
+
+static InstructionExecutor decode_cmn(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_cmn;
+}
+
+static int execute_orr(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"orrs  r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra|rb;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_orr(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_orr;
+}
+
+static int execute_mul(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra*rb; clks += 31;
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_mul(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_mul;
+}
+
+static int execute_bic(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra&(~rb);
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_bic(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_bic;
+}
+
+static int execute_mvn(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"mvns  r%u,r%u",rd,rm);
+    ra=read_register(rm);
+    rc=(~ra);
+    write_register(rd,rc);
+    do_nflag(rc);
+    do_zflag(rc);
+    return 0;
+}
+
+static InstructionExecutor decode_mvn(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_mvn;
+}
+
+static int execute_add_high(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
+    ra=read_register(rd);
+    rb=read_register(rm);
+    rc=ra+rb;
+    if(rd==15)
+    {
+        if((rc&1)==0)
+        {
+            //ATfE 22.1.0 generates code which triggers this
+            if(DBUGPC)fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
+
+        }
+        rc&=~1; //write_register may do this as well
+        rc+=2; //The program counter is special
+        clks += 2;
+    }
+
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_add_high(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
+    decoded->operand = (instr>>3)&0xF;
+    return execute_add_high;
+}
+
+static int execute_cmp_high(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
+    ra=read_register(rn);
+    rb=read_register(rm);
+    rc=ra-rb;
+    do_nflag(rc);
+    do_zflag(rc);
+    do_cflag(ra,~rb,1);
+    do_vflag(ra,~rb,1);
+    return 0;
+}
+
+static InstructionExecutor decode_cmp_high(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
+    decoded->operand = (instr>>3)&0xF;
+    return execute_cmp_high;
+}
+
+static int execute_mov_high(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
+    rc=read_register(rm);
+    if(rd==15)
+    {
+        rc&=~1; //write_register may do this as well
+        rc+=2; //The program counter is special
+        clks++;
+    }
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_mov_high(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
+    decoded->operand = (instr>>3)&0xF;
+    return execute_mov_high;
+}
+
+static int execute_bx(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"bx    r%u",rm);
+    rc=read_register(rm);
+    rc+=2; clks++;
+
+    if(rc&1)
+    {
+        rc&=~1;
+        write_register(15,rc);
+        return 0;
+    }
+    else
+    {
+        fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,0x4700u | (rm << 3));
+        return(1);
+    }
+}
+
+static InstructionExecutor decode_bx(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = (instr>>3)&0xF;
+    return execute_bx;
+}
+
+static int execute_blx_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"blx   r%u",rm);
+    rc=read_register(rm);
+
+    rc+=2; clks++;
+    if(rc&1)
+    {
+        write_register(14,(pc-2)|1);
+        rc&=~1;
+        write_register(15,rc);
+        return 0;
+    }
+    else
+    {
+        fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,0x4780u | (rm << 3));
+        return(1);
+    }
+}
+
+static InstructionExecutor decode_blx_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = (instr>>3)&0xF;
+    return execute_blx_reg;
+}
+
+static int execute_ldr_literal(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
+    ra=read_register(15);
+    ra&=~3;
+    rb+=ra;
+    if (DISS) fprintf(stderr,";@ 0x%X",rb);
+    rc=read32(rb); clks++;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldr_literal(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = (instr&0xFF) << 2;
+    return execute_ldr_literal;
+}
+
+static int execute_str_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read_register(rd);
+    write32(rb,rc); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_str_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_str_reg;
+}
+
+static int execute_strh_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read_register(rd);
+    write16(rb,rc&0xFFFF); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_strh_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_strh_reg;
+}
+
+static int execute_strb_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read_register(rd);
+    ra=read16(rb&(~1)); clks++;
+    if(rb&1)
+    {
+        ra&=0x00FF;
+        ra|=rc<<8;
+    }
+    else
+    {
+        ra&=0xFF00;
+        ra|=rc&0x00FF;
+    }
+    write16(rb&(~1),ra&0xFFFF); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_strb_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_strb_reg;
+}
+
+static int execute_ldrsb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read16(rb&(~1)); clks++;
+    if(rb&1)
+    {
+        rc>>=8;
+    }
+
+    rc&=0xFF;
+    if(rc&0x80) rc|=((MINUS_ONE)<<8);
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrsb(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_ldrsb;
+}
+
+static int execute_ldr_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read32(rb); clks++;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldr_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_ldr_reg;
+}
+
+static int execute_ldrh_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read16(rb); clks++;
+    write_register(rd,rc&0xFFFF);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrh_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_ldrh_reg;
+}
+
+static int execute_ldrb_reg(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read16(rb&(~1)); clks++;
+    if(rb&1)
+    {
+        rc>>=8;
+    }
+
+    write_register(rd,rc&0xFF);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrb_reg(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_ldrb_reg;
+}
+
+static int execute_ldrsh(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
+    rb=read_register(rn)+read_register(rm);
+    rc=read16(rb); clks++;
+    rc&=0xFFFF;
+    if(rc&0x8000) rc|=((MINUS_ONE)<<16);
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrsh(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->reg2 = (instr>>3)&0x7;
+    decoded->operand = (instr>>6)&0x7;
+    return execute_ldrsh;
+}
+
+static int execute_str_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read_register(rd);
+    write32(rb,rc); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_str_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = ((instr>>6)&0x1F) << 2;
+    return execute_str_imm;
+}
+
+static int execute_ldr_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read32(rb); clks++;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldr_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = ((instr>>6)&0x1F) << 2;
+    return execute_ldr_imm;
+}
+
+static int execute_strb_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read_register(rd);
+    ra=read16(rb&(~1)); clks++;
+    if(rb&1)
+    {
+        ra&=0x00FF;
+        ra|=rc<<8;
+    }
+    else
+    {
+        ra&=0xFF00;
+        ra|=rc&0x00FF;
+    }
+    write16(rb&(~1),ra&0xFFFF); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_strb_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = (instr>>6)&0x1F;
+    return execute_strb_imm;
+}
+
+static int execute_ldrb_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read16(rb&(~1)); clks++;
+    if(rb&1)
+    {
+        rc>>=8;
+    }
+
+    write_register(rd,rc&0xFF);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrb_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = (instr>>6)&0x1F;
+    return execute_ldrb_imm;
+}
+
+static int execute_strh_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read_register(rd);
+    write16(rb,rc&0xFFFF); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_strh_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = ((instr>>6)&0x1F) << 1;
+    return execute_strh_imm;
+}
+
+static int execute_ldrh_imm(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->reg2;
+
+    if (DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
+    rb=read_register(rn)+rb;
+    rc=read16(rb); clks++;
+    write_register(rd,rc&0xFFFF);
+    return 0;
+}
+
+static InstructionExecutor decode_ldrh_imm(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x07;
+    decoded->reg2 = (instr>>3)&0x07;
+    decoded->operand = ((instr>>6)&0x1F) << 1;
+    return execute_ldrh_imm;
+}
+
+static int execute_str_sp(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
+    rb=read_register(13)+rb;
+
+    rc=read_register(rd);
+    write32(rb,rc); clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_str_sp(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = (instr&0xFF) << 2;
+    return execute_str_sp;
+}
+
+static int execute_ldr_sp(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
+    ra=read_register(13);
+    //ra&=~3;
+    rb+=ra;
+    rc=read32(rb); clks++;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_ldr_sp(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x07;
+    decoded->operand = (instr&0xFF) << 2;
+    return execute_ldr_sp;
+}
+
+static int execute_adr(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"add   r%u,pc,#0x%02X",rd,rb);
+    ra=read_register(15);
+    rc=(ra&(~3))+rb;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_adr(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x7;
+    decoded->operand = (instr&0xFF) << 2;
+    return execute_adr;
+}
+
+static int execute_add_from_sp(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+
+    if (DISS) fprintf(stderr,"add   r%u,sp,#0x%02X",rd,rb);
+    ra=read_register(13);
+    rc=ra+rb;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_add_from_sp(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x7;
+    decoded->operand = (instr&0xFF) << 2;
+    return execute_add_from_sp;
+}
+
+static int execute_add_sp(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+    unsigned int rc;
+
+    if (DISS) fprintf(stderr,"add   sp,#0x%02X",rb);
+    ra=read_register(13);
+    rc=ra+rb;
+    write_register(13,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_add_sp(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = (instr&0x7F) << 2;
+    return execute_add_sp;
+}
+
+static int execute_sub_sp(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+
+    if (DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
+    ra=read_register(13);
+    ra-=rb;
+    write_register(13,ra);
+    return 0;
+}
+
+static InstructionExecutor decode_sub_sp(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = (instr&0x7F) << 2;
+    return execute_sub_sp;
+}
+
+static int execute_sxth(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    rc = read_register(rm) & ((0x8000u << 1) - 1);
+    write_register(rd, (rc ^ 0x8000u) - 0x8000u);
+    return 0;
+}
+
+static InstructionExecutor decode_sxth(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr & 7;
+    decoded->operand = (instr >> 3) & 7;
+    return execute_sxth;
+}
+
+static int execute_sxtb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    rc = read_register(rm) & ((0x80u << 1) - 1);
+    write_register(rd, (rc ^ 0x80u) - 0x80u);
+    return 0;
+}
+
+static InstructionExecutor decode_sxtb(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr & 7;
+    decoded->operand = (instr >> 3) & 7;
+    return execute_sxtb;
+}
+
+static int execute_uxth(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
+    ra=read_register(rm);
+    rc=ra&0xFFFF;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_uxth(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_uxth;
+}
+
+static int execute_uxtb(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rm = decoded->operand;
+
+    if (DISS) fprintf(stderr,"uxtb  r%u,r%u",rd,rm);
+    ra=read_register(rm);
+    rc=ra&0xFF;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_uxtb(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_uxtb;
+}
+
+static int execute_push(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int sp;
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rd;
+    unsigned int registers = decoded->operand;
+
+    if(DISS)
+    {
+        fprintf(stderr,"push  {");
+        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(registers&rb)
+            {
+                if(rc) fprintf(stderr,",");
+                fprintf(stderr,"r%u",ra);
+                rc++;
+            }
+        }
+        if(registers&0x100)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"lr");
+        }
+        fprintf(stderr,"}");
+    }
+
+    sp=read_register(13);
+
+    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(registers&rb)
+        {
+            rc++;
+        }
+    }
+    if(registers&0x100) rc++;
+    rc<<=2;
+    sp-=rc;
+    rd=sp;
+    for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(registers&rb)
+        {
+            write32(rd,read_register(ra)); clks++;
+            rd+=4;
+        }
+    }
+    if(registers&0x100)
+    {
+        rc=read_register(14);
+        write32(rd,rc);
+
+        if((rc&1)==0)
+        {
+            if(DBUGSTACK)fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
+
+        }
+
+    }
+    write_register(13,sp);
+    return 0;
+}
+
+static InstructionExecutor decode_push(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = instr & 0x1FF;
+    return execute_push;
+}
+
+static int execute_setend(unsigned int pc, const DecodedInstruction *decoded)
+{
+    fprintf(stderr,"setend not implemented\n");
+    return(1);
+}
+
+static InstructionExecutor decode_setend(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_setend;
+}
+
+static int execute_cpsie(unsigned int pc, const DecodedInstruction *decoded)
+{
+    primask = 0;
+    if (DISS) fprintf(stderr, "cpsie i");
+    return 0;
+}
+
+static InstructionExecutor decode_cpsie(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_cpsie;
+}
+
+static int execute_cpsid(unsigned int pc, const DecodedInstruction *decoded)
+{
+    primask = 1;
+    if (DISS) fprintf(stderr, "cpsid i");
+    return 0;
+}
+
+static InstructionExecutor decode_cpsid(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_cpsid;
+}
+
+static int execute_rev(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->operand;
+
+    if (DISS) fprintf(stderr,"rev   r%u,r%u",rd,rn);
+    ra=read_register(rn);
+    rc =((ra>> 0)&0xFF)<<24;
+    rc|=((ra>> 8)&0xFF)<<16;
+    rc|=((ra>>16)&0xFF)<< 8;
+    rc|=((ra>>24)&0xFF)<< 0;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_rev(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_rev;
+}
+
+static int execute_rev16(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->operand;
+
+    if (DISS) fprintf(stderr,"rev16 r%u,r%u",rd,rn);
+    ra=read_register(rn);
+    rc =((ra>> 0)&0xFF)<< 8;
+    rc|=((ra>> 8)&0xFF)<< 0;
+    rc|=((ra>>16)&0xFF)<<24;
+    rc|=((ra>>24)&0xFF)<<16;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_rev16(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_rev16;
+}
+
+static int execute_revsh(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rc;
+    unsigned int rd = decoded->reg1;
+    unsigned int rn = decoded->operand;
+
+    if (DISS) fprintf(stderr,"revsh r%u,r%u",rd,rn);
+    ra=read_register(rn);
+    rc =((ra>> 0)&0xFF)<< 8;
+    rc|=((ra>> 8)&0xFF)<< 0;
+    if(rc&0x8000) rc|=0xFFFF0000;
+    else          rc&=0x0000FFFF;
+    write_register(rd,rc);
+    return 0;
+}
+
+static InstructionExecutor decode_revsh(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = instr&0x7;
+    decoded->operand = (instr>>3)&0x7;
+    return execute_revsh;
+}
+
+static int execute_pop(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int sp;
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int registers = decoded->operand;
+
+    if(DISS)
+    {
+        fprintf(stderr,"pop   {");
+        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(registers&rb)
+            {
+                if(rc) fprintf(stderr,",");
+                fprintf(stderr,"r%u",ra);
+                rc++;
+            }
+        }
+        if(registers&0x100)
+        {
+            if(rc) fprintf(stderr,",");
+            fprintf(stderr,"pc");
+        }
+        fprintf(stderr,"}");
+    }
+
+    sp=read_register(13);
+    for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(registers&rb)
+        {
+            write_register(ra,read32(sp)); clks++;
+            sp+=4;
+        }
+    }
+    if(registers&0x100)
+    {
+        rc=read32(sp); clks += 2;
+        if((rc&1)==0)
+        {
+            if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
+
+            rc&=~1;
+        }
+        rc+=2;
+        write_register(15,rc);
+        sp+=4;
+    }
+    write_register(13,sp);
+    return 0;
+}
+
+static InstructionExecutor decode_pop(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = instr & 0x1FF;
+    return execute_pop;
+}
+
+static int execute_bkpt(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+
+    clks += 2;
+    return without_trace_suffix(handle_bkpt(rb, read32(read_register(13))));
+}
+
+static InstructionExecutor decode_bkpt(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = instr&0xFF;
+    return execute_bkpt;
+}
+
+static int execute_yield(unsigned int pc, const DecodedInstruction *decoded)
+{
+    if (DISS) fprintf(stderr, "yield");
+    return 0;
+}
+
+static InstructionExecutor decode_yield(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_yield;
+}
+
+static int execute_wfe(unsigned int pc, const DecodedInstruction *decoded)
+{
+    if (DISS) fprintf(stderr, "wfe");
+    clks++;
+    if (reg_event) reg_event = 0;
+    else waiting = WaitForEvt;
+    return 0;
+}
+
+static InstructionExecutor decode_wfe(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_wfe;
+}
+
+static int execute_wfi(unsigned int pc, const DecodedInstruction *decoded)
+{
+    if (DISS) fprintf(stderr, "wfi");
+    clks++;
+    waiting = WaitForInt;
+    return 0;
+}
+
+static InstructionExecutor decode_wfi(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_wfi;
+}
+
+static int execute_sev(unsigned int pc, const DecodedInstruction *decoded)
+{
+    if (DISS) fprintf(stderr, "sev");
+    reg_event = 1;
+    return 0;
+}
+
+static InstructionExecutor decode_sev(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_sev;
+}
+
+static int execute_nop(unsigned int pc, const DecodedInstruction *decoded)
+{
+    if (DISS) fprintf(stderr, "nop");
+    return 0;
+}
+
+static InstructionExecutor decode_nop(unsigned int instr, DecodedInstruction *decoded)
+{
+    return execute_nop;
+}
+
+static int execute_stmia(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int sp;
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int registers = decoded->operand;
+
+    if(DISS)
+    {
+        fprintf(stderr,"stmia r%u!,{",rn);
+        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(registers&rb)
+            {
+                if(rc) fprintf(stderr,",");
+                fprintf(stderr,"r%u",ra);
+                rc++;
+            }
+        }
+        fprintf(stderr,"}");
+    }
+    sp=read_register(rn);
+    for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(registers&rb)
+        {
+            write32(sp,read_register(ra)); clks++;
+            sp+=4;
+        }
+    }
+    write_register(rn,sp);
+    return 0;
+}
+
+static InstructionExecutor decode_stmia(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x7;
+    decoded->operand = instr & 0xFF;
+    return execute_stmia;
+}
+
+static int execute_ldmia(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int sp;
+    unsigned int ra;
+    unsigned int rb;
+    unsigned int rc;
+    unsigned int rn = decoded->reg1;
+    unsigned int registers = decoded->operand;
+
+    if(DISS)
+    {
+        fprintf(stderr,"ldmia  r%u!,{",rn);
+        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
+        {
+            if(registers&rb)
+            {
+                if(rc) fprintf(stderr,",");
+                fprintf(stderr,"r%u",ra);
+                rc++;
+            }
+        }
+        fprintf(stderr,"}");
+    }
+    sp=read_register(rn);
+    for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
+    {
+        if(registers&rb)
+        {
+            write_register(ra,read32(sp)); clks++;
+            sp+=4;
+        }
+    }
+    //there is a write back exception.
+    if((registers&(1<<rn))==0) write_register(rn,sp);
+    return 0;
+}
+
+static InstructionExecutor decode_ldmia(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->reg1 = (instr>>8)&0x7;
+    decoded->operand = instr & 0xFF;
+    return execute_ldmia;
+}
+
+static int execute_udf(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    if (DISS) fprintf(stderr, "udf #%u\n", rb);
+    return without_trace_suffix(hardfault("UDF", pc - 4));
+}
+
+static InstructionExecutor decode_udf(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = instr & 255;
+    return execute_udf;
+}
+
+static int execute_beq(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"beq   0x%08X",rb-3);
+    if(cpsr&CPSR_Z)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_beq(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_beq;
+}
+
+static int execute_bne(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bne   0x%08X",rb-3);
+    if(!(cpsr&CPSR_Z))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bne(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bne;
+}
+
+static int execute_bcs(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bcs   0x%08X",rb-3);
+    if(cpsr&CPSR_C)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bcs(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bcs;
+}
+
+static int execute_bcc(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bcc   0x%08X",rb-3);
+    if(!(cpsr&CPSR_C))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bcc(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bcc;
+}
+
+static int execute_bmi(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bmi   0x%08X",rb-3);
+    if(cpsr&CPSR_N)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bmi(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bmi;
+}
+
+static int execute_bpl(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bpl   0x%08X",rb-3);
+    if(!(cpsr&CPSR_N))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bpl(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bpl;
+}
+
+static int execute_bvs(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bvs   0x%08X",rb-3);
+    if(cpsr&CPSR_V)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bvs(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bvs;
+}
+
+static int execute_bvc(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bvc   0x%08X",rb-3);
+    if(!(cpsr&CPSR_V))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bvc(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bvc;
+}
+
+static int execute_bhi(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bhi   0x%08X",rb-3);
+    if((cpsr&CPSR_C)&&(!(cpsr&CPSR_Z)))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bhi(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bhi;
+}
+
+static int execute_bls(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bls   0x%08X",rb-3);
+    if((cpsr&CPSR_Z)||(!(cpsr&CPSR_C)))
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bls(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bls;
+}
+
+static int execute_bge(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bge   0x%08X",rb-3);
+    ra=0;
+    if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
+    if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
+    if(ra)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bge(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bge;
+}
+
+static int execute_blt(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"blt   0x%08X",rb-3);
+    ra=0;
+    if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
+    if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
+    if(ra)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_blt(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_blt;
+}
+
+static int execute_bgt(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"bgt   0x%08X",rb-3);
+    ra=0;
+    if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
+    if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
+    if(cpsr&CPSR_Z) ra=0;
+    if(ra)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_bgt(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_bgt;
+}
+
+static int execute_ble(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int ra;
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr,"ble   0x%08X",rb-3);
+    ra=0;
+    if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
+    if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
+    if(cpsr&CPSR_Z) ra++;
+    if(ra)
+    {
+        write_register(15,rb); clks++;
+    }
+    return 0;
+}
+
+static InstructionExecutor decode_ble(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
+    return execute_ble;
+}
+
+static int execute_svc(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    unsigned int vector;
+    if (DISS) fprintf(stderr, "svc #%u", rb);
+    if (!can_take_exception(EXCEPTION_SVC))
+        return without_trace_suffix(hardfault("SVCall priority escalation", pc - 2));
+    vector = fetch32(entry + 4 * EXCEPTION_SVC);
+    if (!valid_vector(vector))
+        return without_trace_suffix(hardfault("Invalid SVCall vector", pc - 2));
+    write_register(15, enter_exception(EXCEPTION_SVC, pc - 2, vector));
+    return 0;
+}
+
+static InstructionExecutor decode_svc(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = instr & 255;
+    return execute_svc;
+}
+
+static int execute_b(unsigned int pc, const DecodedInstruction *decoded)
+{
+    unsigned int rb = decoded->operand;
+
+    rb += pc + 2;
+    if (DISS) fprintf(stderr, "b     0x%08X", rb - 4);
+    write_register(15, rb);
+    clks++;
+    return 0;
+}
+
+static InstructionExecutor decode_b(unsigned int instr, DecodedInstruction *decoded)
+{
+    decoded->operand = ((instr & 0x7FFu) ^ 0x400u) * 2u - 0x800u;
+    return execute_b;
+}
+
+static int invalid_instruction(unsigned int pc, unsigned int inst, unsigned int second)
+{
+    fprintf(stderr, "invalid instruction 0x%08X 0x%04X", pc - 4, inst);
+    if (inst >= 0xE800) fprintf(stderr, " 0x%04X", second);
+    fputc('\n', stderr);
+    return 1;
+}
+
+static int execute_invalid(unsigned int pc, const DecodedInstruction *decoded)
+{
+    return invalid_instruction(pc, decoded->operand & 0xFFFF, decoded->operand >> 16);
+}
+
+static InstructionExecutor decode_wide(unsigned int instr, DecodedInstruction *decoded)
+{
+    unsigned int inst = instr & 0xFFFF;
+    unsigned int second = instr >> 16;
+
+    if (inst == 0xF3EF && (second & 0xF000) == 0x8000) {
+        unsigned int rd = (second >> 8) & 15;
+        if (rd != 13 && rd != 15)
+            return decode_mrs(instr, decoded);
+    }
+    if ((inst & 0xFFF0) == 0xF380 && (second & 0xFF00) == 0x8800) {
+        unsigned int rn = inst & 15;
+        if (rn != 13 && rn != 15)
+            return decode_msr(instr, decoded);
+    }
+    if (inst == 0xF3BF) {
+        switch (second & 0xFFF0) {
+        case 0x8F40: return decode_dsb(instr, decoded);
+        case 0x8F50: return decode_dmb(instr, decoded);
+        case 0x8F60: return decode_isb(instr, decoded);
+        }
+    }
+    if ((inst & 0xFFF0) == 0xF7F0 && (second & 0xF000) == 0xA000)
+        return decode_udf_w(instr, decoded);
+    if ((inst & 0xF800) == 0xF000 && (second & 0xD000) == 0xD000)
+        return decode_bl(instr, decoded);
+    decoded->operand = instr;
+    return execute_invalid;
+}
+
+static InstructionExecutor decode_narrow(unsigned int instr, DecodedInstruction *decoded)
+{
+    unsigned int inst = instr;
+
+    switch (inst & 0xF000) {
+    case 0x0000:
+        if ((inst & 0xF800) == 0x0000) return decode_lsl_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x0800) return decode_lsr_imm(instr, decoded);
+        break;
+    case 0x1000:
+        if ((inst & 0xF800) == 0x1000) return decode_asr_imm(instr, decoded);
+        if ((inst & 0xFE00) == 0x1800) return decode_add_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x1A00) return decode_sub_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x1C00 && (inst & 0x01C0))
+            return decode_add_imm3(instr, decoded);
+        if ((inst & 0xFFC0) == 0x1C00) return decode_mov_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x1E00) return decode_sub_imm3(instr, decoded);
+        break;
+    case 0x2000:
+        if ((inst & 0xF800) == 0x2000) return decode_mov_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x2800) return decode_cmp_imm(instr, decoded);
+        break;
+    case 0x3000:
+        if ((inst & 0xF800) == 0x3000) return decode_add_imm8(instr, decoded);
+        if ((inst & 0xF800) == 0x3800) return decode_sub_imm8(instr, decoded);
+        break;
+    case 0x4000:
+        if ((inst & 0xFFC0) == 0x4000) return decode_and(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4040) return decode_eor(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4080) return decode_lsl_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x40C0) return decode_lsr_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4100) return decode_asr_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4140) return decode_adc(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4180) return decode_sbc(instr, decoded);
+        if ((inst & 0xFFC0) == 0x41C0) return decode_ror(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4200) return decode_tst(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4240) return decode_neg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4280) return decode_cmp_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x42C0) return decode_cmn(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4300) return decode_orr(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4340) return decode_mul(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4380) return decode_bic(instr, decoded);
+        if ((inst & 0xFFC0) == 0x43C0) return decode_mvn(instr, decoded);
+        if ((inst & 0xFF00) == 0x4400) return decode_add_high(instr, decoded);
+        if ((inst & 0xFF00) == 0x4500) return decode_cmp_high(instr, decoded);
+        if ((inst & 0xFF00) == 0x4600) return decode_mov_high(instr, decoded);
+        if ((inst & 0xFF87) == 0x4700) return decode_bx(instr, decoded);
+        if ((inst & 0xFF87) == 0x4780) return decode_blx_reg(instr, decoded);
+        if ((inst & 0xF800) == 0x4800) return decode_ldr_literal(instr, decoded);
+        break;
+    case 0x5000:
+        if ((inst & 0xFE00) == 0x5000) return decode_str_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5200) return decode_strh_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5400) return decode_strb_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5600) return decode_ldrsb(instr, decoded);
+        if ((inst & 0xFE00) == 0x5800) return decode_ldr_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5A00) return decode_ldrh_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5C00) return decode_ldrb_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5E00) return decode_ldrsh(instr, decoded);
+        break;
+    case 0x6000:
+        if ((inst & 0xF800) == 0x6000) return decode_str_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x6800) return decode_ldr_imm(instr, decoded);
+        break;
+    case 0x7000:
+        if ((inst & 0xF800) == 0x7000) return decode_strb_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x7800) return decode_ldrb_imm(instr, decoded);
+        break;
+    case 0x8000:
+        if ((inst & 0xF800) == 0x8000) return decode_strh_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x8800) return decode_ldrh_imm(instr, decoded);
+        break;
+    case 0x9000:
+        if ((inst & 0xF800) == 0x9000) return decode_str_sp(instr, decoded);
+        if ((inst & 0xF800) == 0x9800) return decode_ldr_sp(instr, decoded);
+        break;
+    case 0xA000:
+        if ((inst & 0xF800) == 0xA000) return decode_adr(instr, decoded);
+        if ((inst & 0xF800) == 0xA800) return decode_add_from_sp(instr, decoded);
+        break;
+    case 0xB000:
+        if ((inst & 0xFF80) == 0xB000) return decode_add_sp(instr, decoded);
+        if ((inst & 0xFF80) == 0xB080) return decode_sub_sp(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB200) return decode_sxth(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB240) return decode_sxtb(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB280) return decode_uxth(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB2C0) return decode_uxtb(instr, decoded);
+        if ((inst & 0xFE00) == 0xB400) return decode_push(instr, decoded);
+        if ((inst & 0xFFF7) == 0xB650) return decode_setend(instr, decoded);
+        if (inst == 0xB662) return decode_cpsie(instr, decoded);
+        if (inst == 0xB672) return decode_cpsid(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBA00) return decode_rev(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBA40) return decode_rev16(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBAC0) return decode_revsh(instr, decoded);
+        if ((inst & 0xFE00) == 0xBC00) return decode_pop(instr, decoded);
+        if ((inst & 0xFF00) == 0xBE00) return decode_bkpt(instr, decoded);
+        if ((inst & 0xFF0F) == 0xBF00) {
+            switch (inst) {
+            case 0xBF10: return decode_yield(instr, decoded);
+            case 0xBF20: return decode_wfe(instr, decoded);
+            case 0xBF30: return decode_wfi(instr, decoded);
+            case 0xBF40: return decode_sev(instr, decoded);
+            default: return decode_nop(instr, decoded);
+            }
+        }
+        break;
+    case 0xC000:
+        if ((inst & 0xF800) == 0xC000) return decode_stmia(instr, decoded);
+        if ((inst & 0xF800) == 0xC800) return decode_ldmia(instr, decoded);
+        break;
+    case 0xD000:
+        if ((inst & 0xFF00) == 0xDE00) return decode_udf(instr, decoded);
+        switch ((inst >> 8) & 15) {
+        case 0x0: return decode_beq(instr, decoded);
+        case 0x1: return decode_bne(instr, decoded);
+        case 0x2: return decode_bcs(instr, decoded);
+        case 0x3: return decode_bcc(instr, decoded);
+        case 0x4: return decode_bmi(instr, decoded);
+        case 0x5: return decode_bpl(instr, decoded);
+        case 0x6: return decode_bvs(instr, decoded);
+        case 0x7: return decode_bvc(instr, decoded);
+        case 0x8: return decode_bhi(instr, decoded);
+        case 0x9: return decode_bls(instr, decoded);
+        case 0xA: return decode_bge(instr, decoded);
+        case 0xB: return decode_blt(instr, decoded);
+        case 0xC: return decode_bgt(instr, decoded);
+        case 0xD: return decode_ble(instr, decoded);
+        }
+        if ((inst & 0xFF00) == 0xDF00) return decode_svc(instr, decoded);
+        break;
+    case 0xE000:
+        if ((inst & 0xF800) == 0xE000) return decode_b(instr, decoded);
+        break;
+    }
+    decoded->operand = instr;
+    return execute_invalid;
+}
+
 int execute ( void )
 {
     unsigned int pc;
-    unsigned int sp;
-    unsigned int inst;
-    unsigned int second = 0;
-
-    unsigned int ra,rb,rc;
-    unsigned int rm,rd,rn,rs;
-    unsigned int op;
-
-    char *sym = NULL;
-
     pc=read_register(15);
     if (active_exception && (pc & 0xFFFFFFF0u) == 0xFFFFFFF0u) {
         unsigned int exc_return = (pc - 2) | 1u;
@@ -1863,1677 +4501,292 @@ int execute ( void )
         pc = enter_exception(EXCEPTION_SYSTICK, pc - 2, vector);
     }
 
-    inst=fetch16(pc-2); clks++;
-    pc+=2;
-    write_register(15,pc);
-    if(DISS) {
+
+    const unsigned int address = pc - 2;
+    DecodedInstruction decoded;
+#if PAGE_STATS
+    single_instructions++;
+#endif
+    const unsigned int inst = fetch16(address);
+    clks++;
+    pc += 2;
+    write_register(15, pc);
+
+    const char *sym = NULL;
+    if (DISS) {
         if (DISR) dump_registers();
-        fprintf(stderr,"--- 0x%08X: 0x%04X ",(pc-4),inst);
-        sym = get_sym(pc-4);
+        fprintf(stderr, "--- 0x%08X: 0x%04X ", pc - 4, inst);
+        sym = get_sym(pc - 4);
     }
-
-if(output_vcd)
-{
-    unsigned int vv;
-    fprintf(fpvcd,"b");
-    for(vv=0x8000;vv;vv>>=1)
-    {
-        if(vv&inst) fprintf(fpvcd,"1"); else fprintf(fpvcd,"0");
+    if (output_vcd) {
+        unsigned int bit;
+        fputc('b', fpvcd);
+        for (bit = 0x8000; bit; bit >>= 1)
+            fputc((bit & inst) ? '1' : '0', fpvcd);
+        fprintf(fpvcd, " inst\n");
     }
-    fprintf(fpvcd," inst\n");
-}
-
-
 
     instructions++;
-
-    // The second halfword of a wide instruction is never executed on its own.
-    if (inst >= 0xE800)
-    {
-        const char *barrier = NULL;
-
-        second = fetch16(pc - 2);
+    unsigned int instr = inst;
+    if (inst >= 0xE800) {
+        const unsigned int second = fetch16(pc - 2);
         clks++;
         if (DISS) fprintf(stderr, "0x%04X ", second);
-
-        if (inst == 0xF3EF && (second & 0xF000) == 0x8000) {
-            rd = (second >> 8) & 15;
-            if (rd == 13 || rd == 15) goto ErrOut;
-            if (DISS) fprintf(stderr, "mrs r%u, sysm=%u", rd, second & 255);
-            write_register(rd, read_special(second & 255));
-            write_register(15, pc + 2);
-            clks += 2;
-            goto Return;
-        }
-        if ((inst & 0xFFF0) == 0xF380 && (second & 0xFF00) == 0x8800) {
-            rn = inst & 15;
-            if (rn == 13 || rn == 15) goto ErrOut;
-            if (DISS) fprintf(stderr, "msr sysm=%u, r%u", second & 255, rn);
-            write_special(second & 255, read_register(rn));
-            write_register(15, pc + 2);
-            clks += 2;
-            goto Return;
-        }
-
-        if (inst == 0xF3BF) {
-            switch (second & 0xFFF0) {
-            case 0x8F40: barrier = "dsb"; break;
-            case 0x8F50: barrier = "dmb"; break;
-            case 0x8F60: barrier = "isb"; break;
-            }
-            if (barrier) {
-                // Memory accesses complete synchronously and there is no prefetch.
-                if (DISS) fprintf(stderr, "%s", barrier);
-                write_register(15, pc + 2);
-                clks++;
-                goto Return;
-            }
-        }
-        if ((inst & 0xFFF0) == 0xF7F0 && (second & 0xF000) == 0xA000) {
-            if (DISS) fprintf(stderr, "udf.w #%u\n", ((inst & 0xF) << 12) | (second & 0xFFF));
-            return hardfault("UDF", pc - 4);
-        }
-        if ((inst & 0xF800) == 0xF000 && (second & 0xD000) == 0xD000) {
-            unsigned int sign = (inst >> 10) & 1;
-            unsigned int i1 = ((second >> 13) & 1) ^ sign ^ 1;
-            unsigned int i2 = ((second >> 11) & 1) ^ sign ^ 1;
-            unsigned int offset = (i1 << 23) | (i2 << 22) |
-                                  ((inst & 0x3FF) << 12) | ((second & 0x7FF) << 1);
-
-            if (sign) offset |= 0xFF000000u;
-            if (DISS) fprintf(stderr, "bl    0x%08X", pc + offset);
-            write_register(14, pc | 1);
-            write_register(15, pc + offset + 2);
-            clks += 2;
-            goto Return;
-        }
-        goto ErrOut;
+        instr |= second << 16;
     }
-switch(inst&0xF000){
-case 0x0000:
-    //LSL(1)
-    if((inst&0xF800)==0x0000)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsls  r%u,r%u,#0x%X",rd,rm,rb);
-        rc=read_register(rm);
-        if(rb==0)
-        {
-            //if immed_5 == 0
-            //C unnaffected
-            //result not shifted
-        }
-        else
-        {
-            //else immed_5 > 0
-            do_cflag_bit(rc&(1<<(32-rb)));
-            rc<<=rb;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
+    InstructionExecutor func = inst >= 0xE800 ? decode_wide(instr, &decoded)
+                                              : decode_narrow(instr, &decoded);
+    int result = func(pc, &decoded);
 
-    //LSR(1) two register immediate
-    if((inst&0xF800)==0x0800)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"lsrs  r%u,r%u,#0x%X",rd,rm,rb);
-        rc=read_register(rm);
-        if(rb==0)
-        {
-            do_cflag_bit(rc&0x80000000);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            rc>>=rb;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-    goto ErrOut;
-case 0x1000:
-
-    //ASR(1) two register immediate
-    if((inst&0xF800)==0x1000)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"asrs  r%u,r%u,#0x%X",rd,rm,rb);
-        rc=read_register(rm);
-        if(rb==0)
-        {
-            if(rc&0x80000000)
-            {
-                do_cflag_bit(1);
-                rc=MINUS_ONE;
-            }
-            else
-            {
-                do_cflag_bit(0);
-                rc=0;
-            }
-        }
-        else
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            ra=rc&0x80000000;
-            rc>>=rb;
-            if(ra) //asr, sign is shifted in
-            {
-                rc|=(MINUS_ONE)<<(32-rb);
-            }
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //--- FE00 ---
-    //ADD(3) three registers
-    if((inst&0xFE00)==0x1800)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"adds  r%u,r%u,r%u",rd,rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra+rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
-        goto Return;
-    }
-
-    //SUB(3)
-    if((inst&0xFE00)==0x1A00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"subs  r%u,r%u,r%u",rd,rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //ADD(1) small immediate two registers
-    if((inst&0xFE00)==0x1C00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rb=(inst>>6)&0x7;
-        if(rb)
-        {
-if(DISS) fprintf(stderr,"adds  r%u,r%u,#0x%X",rd,rn,rb);
-            ra=read_register(rn);
-            rc=ra+rb;
-//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
-            write_register(rd,rc);
-            do_nflag(rc);
-            do_zflag(rc);
-            do_cflag(ra,rb,0);
-            do_vflag(ra,rb,0);
-            goto Return;
-        }
-        else
-        {
-            //this is a mov
-        }
-    }
-
-    //MOV(2) two low registers
-    if((inst&0xFFC0)==0x1C00)
-    {
-        rd=(inst>>0)&7;
-        rn=(inst>>3)&7;
-if(DISS) fprintf(stderr,"movs  r%u,r%u",rd,rn);
-        rc=read_register(rn);
-//fprintf(stderr,"0x%08X\n",rc);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag_bit(0);
-        do_vflag_bit(0);
-        goto Return;
-    }
-
-    //SUB(1)
-    if((inst&0xFE00)==0x1E00)
-    {
-        rd=(inst>>0)&7;
-        rn=(inst>>3)&7;
-        rb=(inst>>6)&7;
-if(DISS) fprintf(stderr,"subs  r%u,r%u,#0x%X",rd,rn,rb);
-        ra=read_register(rn);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-    goto ErrOut;
-case 0x2000:
-
-    //MOV(1) immediate
-    if((inst&0xF800)==0x2000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"movs  r%u,#0x%02X",rd,rb);
-        write_register(rd,rb);
-        do_nflag(rb);
-        do_zflag(rb);
-        goto Return;
-    }
-
-    //CMP(1) compare immediate
-    if((inst&0xF800)==0x2800)
-    {
-        rb=(inst>>0)&0xFF;
-        rn=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"cmp   r%u,#0x%02X",rn,rb);
-        ra=read_register(rn);
-        rc=ra-rb;
-//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-    goto ErrOut;
-case 0x3000:
-
-    //ADD(2) big immediate one register
-    if((inst&0xF800)==0x3000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-if(DISS) fprintf(stderr,"adds  r%u,#0x%02X",rd,rb);
-        ra=read_register(rd);
-        rc=ra+rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
-        goto Return;
-    }
-
-    //SUB(2)
-    if((inst&0xF800)==0x3800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-if(DISS) fprintf(stderr,"subs  r%u,#0x%02X",rd,rb);
-        ra=read_register(rd);
-        rc=ra-rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-    goto ErrOut;
-case 0x4000:
-
-    //AND
-    if((inst&0xFFC0)==0x4000)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"ands  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra&rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //EOR
-    if((inst&0xFFC0)==0x4040)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"eors  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra^rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LSL(2) two register
-    if((inst&0xFFC0)==0x4080)
-    {
-        rd=(inst>>0)&0x07;
-        rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsls  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        rb=read_register(rs);
-        rb&=0xFF;
-        if(rb==0)
-        {
-        }
-        else if(rb<32)
-        {
-            do_cflag_bit(rc&(1<<(32-rb)));
-            rc<<=rb;
-        }
-        else if(rb==32)
-        {
-            do_cflag_bit(rc&1);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(0);
-            rc=0;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //LSR(2) two register
-    if((inst&0xFFC0)==0x40C0)
-    {
-        rd=(inst>>0)&0x07;
-        rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"lsrs  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        rb=read_register(rs);
-        rb&=0xFF;
-        if(rb==0)
-        {
-        }
-        else if(rb<32)
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            rc>>=rb;
-        }
-        else if(rb==32)
-        {
-            do_cflag_bit(rc&0x80000000);
-            rc=0;
-        }
-        else
-        {
-            do_cflag_bit(0);
-            rc=0;
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //ASR(2) two register
-    if((inst&0xFFC0)==0x4100)
-    {
-        rd=(inst>>0)&0x07;
-        rs=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"asrs  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        rb=read_register(rs);
-        rb&=0xFF;
-        if(rb==0)
-        {
-        }
-        else if(rb<32)
-        {
-            do_cflag_bit(rc&(1<<(rb-1)));
-            ra=rc&0x80000000;
-            rc>>=rb;
-            if(ra) //asr, sign is shifted in
-            {
-                rc|=(MINUS_ONE)<<(32-rb);
-            }
-        }
-        else
-        {
-            if(rc&0x80000000)
-            {
-                do_cflag_bit(1);
-                rc=(MINUS_ONE);
-            }
-            else
-            {
-                do_cflag_bit(0);
-                rc=0;
-            }
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //ADC
-    if((inst&0xFFC0)==0x4140)
-    {
-        rd=(inst>>0)&0x07;
-        rm=(inst>>3)&0x07;
-if(DISS) fprintf(stderr,"adc   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra+rb;
-        if(cpsr&CPSR_C) rc++;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        if(cpsr&CPSR_C) { do_cflag(ra,rb,1); do_vflag(ra,rb,1); }
-        else            { do_cflag(ra,rb,0); do_vflag(ra,rb,0); }
-        goto Return;
-    }
-
-    //SBC
-    if((inst&0xFFC0)==0x4180)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"sbc   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra-rb;
-        if(!(cpsr&CPSR_C)) rc--;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        if(cpsr&CPSR_C)
-        {
-            do_cflag(ra,~rb,1);
-            do_vflag(ra,~rb,1);
-        }
-        else
-        {
-            do_cflag(ra,~rb,0);
-            do_vflag(ra,~rb,0);
-        }
-        goto Return;
-    }
-
-    //ROR
-    if((inst&0xFFC0)==0x41C0)
-    {
-        rd=(inst>>0)&0x7;
-        rs=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rors  r%u,r%u",rd,rs);
-        rc=read_register(rd);
-        ra=read_register(rs);
-        ra&=0xFF;
-        if(ra==0)
-        {
-        }
-        else
-        {
-            ra&=0x1F;
-            if(ra==0)
-            {
-                do_cflag_bit(rc&0x80000000);
-            }
-            else
-            {
-                do_cflag_bit(rc&(1<<(ra-1)));
-                rb=rc<<(32-ra);
-                rc>>=ra;
-                rc|=rb;
-            }
-        }
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //TST
-    if((inst&0xFFC0)==0x4200)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"tst   r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra&rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //NEG
-    if((inst&0xFFC0)==0x4240)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"negs  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=0-ra;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(0,~ra,1);
-        do_vflag(0,~ra,1);
-        goto Return;
-    }
-
-    //CMP(2) compare register
-    if((inst&0xFFC0)==0x4280)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-//fprintf(stderr,"0x%08X 0x%08X\n",ra,rb);
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //CMN
-    if((inst&0xFFC0)==0x42C0)
-    {
-        rn=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"cmns  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra+rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,rb,0);
-        do_vflag(ra,rb,0);
-        goto Return;
-    }
-
-    //ORR
-    if((inst&0xFFC0)==0x4300)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"orrs  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra|rb;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //MUL
-    if((inst&0xFFC0)==0x4340)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"muls  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra*rb; clks += 31;
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //BIC
-    if((inst&0xFFC0)==0x4380)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"bics  r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra&(~rb);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //MVN
-    if((inst&0xFFC0)==0x43C0)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"mvns  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=(~ra);
-        write_register(rd,rc);
-        do_nflag(rc);
-        do_zflag(rc);
-        goto Return;
-    }
-
-    //--- FF00 ---
-    //ADD(4) two registers one or both high no flags
-    if((inst&0xFF00)==0x4400)
-    {
-        if((inst>>6)&3)
-        {
-            //UNPREDICTABLE
-        }
-        rd=(inst>>0)&0x7;
-        rd|=(inst>>4)&0x8;
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"add   r%u,r%u",rd,rm);
-        ra=read_register(rd);
-        rb=read_register(rm);
-        rc=ra+rb;
-        if(rd==15)
-        {
-            if((rc&1)==0)
-            {
-                //ATfE 22.1.0 generates code which triggers this
-                if(DBUGPC)fprintf(stderr,"add pc,... produced an arm address 0x%08X 0x%08X\n",pc,rc);
-            //    exit(1);
-            }
-            rc&=~1; //write_register may do this as well
-            rc+=2; //The program counter is special
-            clks += 2;
-        }
-//fprintf(stderr,"0x%08X = 0x%08X + 0x%08X\n",rc,ra,rb);
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //CMP(3) compare high register
-    if((inst&0xFF00)==0x4500)
-    {
-        if(((inst>>6)&3)==0x0)
-        {
-            //UNPREDICTABLE
-        }
-        rn=(inst>>0)&0x7;
-        rn|=(inst>>4)&0x8;
-        if(rn==0xF)
-        {
-            //UNPREDICTABLE
-        }
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"cmps  r%u,r%u",rn,rm);
-        ra=read_register(rn);
-        rb=read_register(rm);
-        rc=ra-rb;
-        do_nflag(rc);
-        do_zflag(rc);
-        do_cflag(ra,~rb,1);
-        do_vflag(ra,~rb,1);
-        goto Return;
-    }
-
-    //MOV(3)
-    if((inst&0xFF00)==0x4600)
-    {
-        rd=(inst>>0)&0x7;
-        rd|=(inst>>4)&0x8;
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"mov   r%u,r%u",rd,rm);
-        rc=read_register(rm);
-        if((rd==14)&&(rm==15))
-        {
-            //printf("mov lr,pc warning 0x%08X\n",pc-2);
-            //rc|=1;
-        }
-        if(rd==15)
-        {
-            //if((rc&1)==0)
-            //{
-                //fprintf(stderr,"cpy or mov pc,... produced an ARM address 0x%08X 0x%08X\n",pc,rc);
-                //exit(1);
-            //}
-            rc&=~1; //write_register may do this as well
-            rc+=2; //The program counter is special
-            clks++;
-        }
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //CPY copy high register
-    if((inst&0xFFC0)==0x4600)
-    {
-        //same as mov except you can use both low registers
-        //going to let mov handle high registers
-        rd=(inst>>0)&0x7; //mov handles the high registers
-        rm=(inst>>3)&0x7; //mov handles the high registers
-if(DISS) fprintf(stderr,"cpy   r%u,r%u",rd,rm);
-        rc=read_register(rm);
-        //if(rd==15) //mov handles the high registers like r15
-        //{
-            //rc&=~1;
-            //rc+=2; //The program counter is special
-        //}
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //BX
-    if((inst&0xFF87)==0x4700)
-    {
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"bx    r%u",rm);
-        rc=read_register(rm);
-        rc+=2; clks++;
-//fprintf(stderr,"bx r%u 0x%X 0x%X\n",rm,rc,pc);
-        if(rc&1)
-        {
-            rc&=~1;
-            write_register(15,rc);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            return(1);
-        }
-    }
-
-    //BLX(2)
-    if((inst&0xFF87)==0x4780)
-    {
-        rm=(inst>>3)&0xF;
-if(DISS) fprintf(stderr,"blx   r%u",rm);
-        rc=read_register(rm);
-//fprintf(stderr,"blx r%u 0x%X 0x%X\n",rm,rc,pc);
-        rc+=2; clks++;
-        if(rc&1)
-        {
-            write_register(14,(pc-2)|1);
-            rc&=~1;
-            write_register(15,rc);
-            goto Return;
-        }
-        else
-        {
-            fprintf(stderr,"\ncannot branch to arm 0x%08X 0x%04X\n",pc,inst);
-            return(1);
-        }
-    }
-
-    //LDR(3)
-    if((inst&0xF800)==0x4800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[pc+#0x%X] ",rd,rb);
-        ra=read_register(15);
-        ra&=~3;
-        rb+=ra;
-if(DISS) fprintf(stderr,";@ 0x%X",rb);
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-goto ErrOut;
-case 0x5000:
-
-    //STR(2)
-    if((inst&0xFE00)==0x5000)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"str   r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //STRH(2)
-    if((inst&0xFE00)==0x5200)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strh  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        write16(rb,rc&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //STRB(2)
-    if((inst&0xFE00)==0x5400)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"strb  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read_register(rd);
-        ra=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            ra&=0x00FF;
-            ra|=rc<<8;
-        }
-        else
-        {
-            ra&=0xFF00;
-            ra|=rc&0x00FF;
-        }
-        write16(rb&(~1),ra&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //LDRSB
-    if((inst&0xFE00)==0x5600)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsb r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        rc&=0xFF;
-        if(rc&0x80) rc|=((MINUS_ONE)<<8);
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDR(2) three register
-    if((inst&0xFE00)==0x5800)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldr   r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //LDRH(2)
-    if((inst&0xFE00)==0x5A00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb); clks++;
-        write_register(rd,rc&0xFFFF);
-        goto Return;
-    }
-
-    //LDRB(2)
-    if((inst&0xFE00)==0x5C00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        write_register(rd,rc&0xFF);
-        goto Return;
-    }
-
-    //LDRSH
-    if((inst&0xFE00)==0x5E00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-        rm=(inst>>6)&0x7;
-if(DISS) fprintf(stderr,"ldrsh r%u,[r%u,r%u]",rd,rn,rm);
-        rb=read_register(rn)+read_register(rm);
-        rc=read16(rb); clks++;
-        rc&=0xFFFF;
-        if(rc&0x8000) rc|=((MINUS_ONE)<<16);
-        write_register(rd,rc);
-        goto Return;
-    }
-goto ErrOut;
-case 0x6000:
-
-    //STR(1)
-    if((inst&0xF800)==0x6000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"str   r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //LDR(1) two register immediate
-    if((inst&0xF800)==0x6800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-goto ErrOut;
-case 0x7000:
-
-    //STRB(1)
-    if((inst&0xF800)==0x7000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"strb  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        ra=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            ra&=0x00FF;
-            ra|=rc<<8;
-        }
-        else
-        {
-            ra&=0xFF00;
-            ra|=rc&0x00FF;
-        }
-        write16(rb&(~1),ra&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //LDRB(1)
-    if((inst&0xF800)==0x7800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-if(DISS) fprintf(stderr,"ldrb  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read16(rb&(~1)); clks++;
-        if(rb&1)
-        {
-            rc>>=8;
-        }
-        else
-        {
-        }
-        write_register(rd,rc&0xFF);
-        goto Return;
-    }
-
-goto ErrOut;
-case 0x8000:
-
-    //STRH(1)
-    if((inst&0xF800)==0x8000)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=1;
-if(DISS) fprintf(stderr,"strh  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read_register(rd);
-        write16(rb,rc&0xFFFF); clks++;
-        goto Return;
-    }
-
-    //LDRH(1)
-    if((inst&0xF800)==0x8800)
-    {
-        rd=(inst>>0)&0x07;
-        rn=(inst>>3)&0x07;
-        rb=(inst>>6)&0x1F;
-        rb<<=1;
-if(DISS) fprintf(stderr,"ldrh  r%u,[r%u,#0x%X]",rd,rn,rb);
-        rb=read_register(rn)+rb;
-        rc=read16(rb); clks++;
-        write_register(rd,rc&0xFFFF);
-        goto Return;
-    }
-goto ErrOut;
-case 0x9000:
-
-    //STR(3)
-    if((inst&0xF800)==0x9000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"str   r%u,[sp,#0x%X]",rd,rb);
-        rb=read_register(13)+rb;
-//fprintf(stderr,"0x%08X\n",rb);
-        rc=read_register(rd);
-        write32(rb,rc); clks++;
-        goto Return;
-    }
-
-    //LDR(4)
-    if((inst&0xF800)==0x9800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x07;
-        rb<<=2;
-if(DISS) fprintf(stderr,"ldr   r%u,[sp+#0x%X]",rd,rb);
-        ra=read_register(13);
-        //ra&=~3;
-        rb+=ra;
-        rc=read32(rb); clks++;
-        write_register(rd,rc);
-        goto Return;
-    }
-goto ErrOut;
-case 0xA000:
-
-    //ADD(5) rd = pc plus immediate
-    if((inst&0xF800)==0xA000)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,pc,#0x%02X",rd,rb);
-        ra=read_register(15);
-        rc=(ra&(~3))+rb;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //ADD(6) rd = sp plus immediate
-    if((inst&0xF800)==0xA800)
-    {
-        rb=(inst>>0)&0xFF;
-        rd=(inst>>8)&0x7;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   r%u,sp,#0x%02X",rd,rb);
-        ra=read_register(13);
-        rc=ra+rb;
-        write_register(rd,rc);
-        goto Return;
-    }
-goto ErrOut;
-case 0xB000:
-
-    //--- FF80 ---
-    //ADD(7) sp plus immediate
-    if((inst&0xFF80)==0xB000)
-    {
-        rb=(inst>>0)&0x7F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"add   sp,#0x%02X",rb);
-        ra=read_register(13);
-        rc=ra+rb;
-        write_register(13,rc);
-        goto Return;
-    }
-
-    //SUB(4)
-    if((inst&0xFF80)==0xB080)
-    {
-        rb=inst&0x7F;
-        rb<<=2;
-if(DISS) fprintf(stderr,"sub   sp,#0x%02X",rb);
-        ra=read_register(13);
-        ra-=rb;
-        write_register(13,ra);
-        goto Return;
-    }
-
-    //SXTB and SXTH
-    if((inst&0xFF80)==0xB200)
-    {
-        rd=inst&7;
-        rm=(inst>>3)&7;
-        rb=(inst&0x40)? 0x80 : 0x8000;
-        rc=read_register(rm)&((rb<<1)-1);
-        write_register(rd,(rc^rb)-rb);
-        goto Return;
-    }
-
-    //UXTH
-    if((inst&0xFFC0)==0xB280)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxth  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFFFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //UXTB
-    if((inst&0xFFC0)==0xB2C0)
-    {
-        rd=(inst>>0)&0x7;
-        rm=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"uxtb  r%u,r%u",rd,rm);
-        ra=read_register(rm);
-        rc=ra&0xFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //PUSH
-    if((inst&0xFE00)==0xB400)
-    {
-
-if(DISS)
-{
-    fprintf(stderr,"push  {");
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    if(inst&0x100)
-    {
-        if(rc) fprintf(stderr,",");
-        fprintf(stderr,"lr");
-    }
-    fprintf(stderr,"}");
+    if (DISS && result == 0)
+        fprintf(stderr, sym ? " ; %s\n" : "\n", sym);
+    return result == NO_TRACE_SUFFIX ? 0 : result;
 }
 
-        sp=read_register(13);
-//fprintf(stderr,"sp 0x%08X\n",sp);
-        for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                rc++;
-            }
-        }
-        if(inst&0x100) rc++;
-        rc<<=2;
-        sp-=rc;
-        rd=sp;
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write32(rd,read_register(ra)); clks++;
-                rd+=4;
-            }
-        }
-        if(inst&0x100)
-        {
-            rc=read_register(14);
-            write32(rd,rc); //read_register(14));
-
-            if((rc&1)==0)
-            {
-                if(DBUGSTACK)fprintf(stderr,"\npush {lr} with an ARM address pc 0x%08X popped 0x%08X\n",pc,rc);
-//                exit(1);
-            }
-
-
-        }
-        write_register(13,sp);
-        goto Return;
-    }
-
-    //SETEND
-    if((inst&0xFFF7)==0xB650)
-    {
-        fprintf(stderr,"setend not implemented\n");
-        return(1);
-    }
-
-    // CPSIE i / CPSID i change the interrupt mask in thread or handler mode.
-    if ((inst & 0xFFEF) == 0xB662) {
-        primask = (inst & 0x10) != 0;
-        if (DISS) fprintf(stderr, "cps%s i", primask ? "id" : "ie");
-        goto Return;
-    }
-
-    //REV
-    if((inst&0xFFC0)==0xBA00)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev   r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<<24;
-        rc|=((ra>> 8)&0xFF)<<16;
-        rc|=((ra>>16)&0xFF)<< 8;
-        rc|=((ra>>24)&0xFF)<< 0;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //REV16
-    if((inst&0xFFC0)==0xBA40)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"rev16 r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<< 8;
-        rc|=((ra>> 8)&0xFF)<< 0;
-        rc|=((ra>>16)&0xFF)<<24;
-        rc|=((ra>>24)&0xFF)<<16;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //REVSH
-    if((inst&0xFFC0)==0xBAC0)
-    {
-        rd=(inst>>0)&0x7;
-        rn=(inst>>3)&0x7;
-if(DISS) fprintf(stderr,"revsh r%u,r%u",rd,rn);
-        ra=read_register(rn);
-        rc =((ra>> 0)&0xFF)<< 8;
-        rc|=((ra>> 8)&0xFF)<< 0;
-        if(rc&0x8000) rc|=0xFFFF0000;
-        else          rc&=0x0000FFFF;
-        write_register(rd,rc);
-        goto Return;
-    }
-
-    //POP
-    if((inst&0xFE00)==0xBC00)
-    {
-if(DISS)
+// Leave the final mapped page on the single-step path so a wide fetch at
+// the last halfword still reports the unmapped second halfword.
+static int page_address(unsigned int address)
 {
-    fprintf(stderr,"pop   {");
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    if(inst&0x100)
-    {
-        if(rc) fprintf(stderr,",");
-        fprintf(stderr,"pc");
-    }
-    fprintf(stderr,"}");
+    return address < 0x10000000u - CODE_PAGE_BYTES;
 }
 
-        sp=read_register(13);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write_register(ra,read32(sp)); clks++;
-                sp+=4;
-            }
-        }
-        if(inst&0x100)
-        {
-            rc=read32(sp); clks += 2;
-            if((rc&1)==0)
-            {
-                if(DBUGSTACK)fprintf(stderr,"\npop {rc} with an ARM address pc 0x%08X popped 0x%08X",pc,rc);
-                //exit(1);
-                rc&=~1;
-            }
-            rc+=2;
-            write_register(15,rc);
-            sp+=4;
-        }
-        write_register(13,sp);
-        goto Return;
-    }
-
-    //BKPT
-    if((inst&0xFF00)==0xBE00)
-    {
-        rb=(inst>>0)&0xFF;
-        // fprintf(stderr,"bkpt 0x%02X\n",rb);
-        // return(1);
-        clks += 2;
-        return(handle_bkpt(rb, read32(read_register(13))));
-    }
-
-    // Hint encodings have a zero low nibble. Other 0xBFxx encodings are IT.
-    if ((inst & 0xFF0F) == 0xBF00)
-    {
-        switch (inst) {
-        case 0xBF10:
-            if (DISS) fprintf(stderr, "yield");
-            break;
-        case 0xBF20:
-            if (DISS) fprintf(stderr, "wfe");
-            clks++;
-            if (reg_event) reg_event = 0;
-            else waiting = WaitForEvt;
-            break;
-        case 0xBF30:
-            if (DISS) fprintf(stderr, "wfi");
-            clks++;
-            waiting = WaitForInt;
-            break;
-        case 0xBF40:
-            if (DISS) fprintf(stderr, "sev");
-            reg_event = 1;
-            break;
-        default: // NOP and unallocated hints
-            if (DISS) fprintf(stderr, "nop");
-            break;
-        }
-        goto Return;
-    }
-goto ErrOut;
-case 0xC000:
-
-    //STMIA
-    if((inst&0xF800)==0xC000)
-    {
-        rn=(inst>>8)&0x7;
-
-if(DISS)
+static int interrupt_due(void)
 {
-    fprintf(stderr,"stmia r%u!,{",rn);
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
-        }
-    }
-    fprintf(stderr,"}");
+    return systick_pending && can_take_exception(EXCEPTION_SYSTICK);
 }
-        sp=read_register(rn);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write32(sp,read_register(ra)); clks++;
-                sp+=4;
-            }
-        }
-        write_register(rn,sp);
-        goto Return;
-    }
 
-    //LDMIA
-    if((inst&0xF800)==0xC800)
-    {
-        rn=(inst>>8)&0x7;
-if(DISS)
+static int decode_current_page(unsigned int pc, const DecodedInstruction *current)
 {
-    fprintf(stderr,"ldmia  r%u!,{",rn);
-    for(ra=0,rb=0x01,rc=0;rb;rb=(rb<<1)&0xFF,ra++)
-    {
-        if(inst&rb)
-        {
-            if(rc) fprintf(stderr,",");
-            fprintf(stderr,"r%u",ra);
-            rc++;
+    // pc is four bytes ahead of the current instruction during execution.
+    const unsigned int address = (pc - 4) & ROMADDMASK;
+    const unsigned int base = address & ~(CODE_PAGE_BYTES - 1u);
+    CodePage *page = code_pages[base / CODE_PAGE_BYTES];
+
+    // Decode each possible halfword entry point independently. A branch can
+    // target any halfword. A wide instruction may end on the next page.
+    for (unsigned int slot = 0; slot < PAGE_SLOTS; ++slot) {
+        const unsigned int halfword = base / 2 + slot;
+        const unsigned int first = rom[halfword];
+        DecodedInstruction *decoded = &page->decoded[slot];
+
+        if (first >= 0xE800) {
+            const unsigned int second = rom[(halfword + 1) & (ROMSIZE / 2 - 1u)];
+            decoded->width = 2;
+            page->func[slot] = decode_wide(first | (second << 16), decoded);
+        } else {
+            decoded->width = 1;
+            page->func[slot] = decode_narrow(first, decoded);
         }
     }
-    fprintf(stderr,"}");
+#if PAGE_STATS
+    pages_decoded++;
+#endif
+
+    const unsigned int slot = (address - base) / 2;
+    fetches += current->width;
+    clks += current->width;
+    return page->func[slot](pc, current);
 }
-        sp=read_register(rn);
-        for(ra=0,rb=0x01;rb;rb=(rb<<1)&0xFF,ra++)
-        {
-            if(inst&rb)
-            {
-                write_register(ra,read32(sp)); clks++;
-                sp+=4;
-            }
+
+static CodePage *get_code_page(unsigned int base)
+{
+    const unsigned int index = (base & ROMADDMASK) / CODE_PAGE_BYTES;
+    CodePage *page = code_pages[index];
+
+    if (!page) {
+        page = calloc(1, sizeof(*page));
+        if (!page) {
+            fprintf(stderr, "Unable to allocate decoded code page\n");
+            exit(1);
         }
-        //there is a write back exception.
-        if((inst&(1<<rn))==0) write_register(rn,sp);
-        goto Return;
+        for (unsigned int slot = 0; slot < PAGE_SLOTS; ++slot)
+            page->func[slot] = decode_current_page;
+        code_pages[index] = page;
     }
-goto ErrOut;
-case 0xD000:
+    return page;
+}
 
-    if ((inst & 0xFF00) == 0xDE00) {
-        if (DISS) fprintf(stderr, "udf #%u\n", inst & 0xFF);
-        return hardfault("UDF", pc - 4);
+static int execute_page(void)
+{
+    unsigned int address = reg_norm[15] - 2;
+    unsigned int base;
+    CodePage *page;
+    InstructionExecutor *func;
+    const DecodedInstruction *decoded;
+
+transfer:
+    // Same-page branches restart at their target slot. Cross-page branches
+    // select the target page here without nesting calls to execute_page().
+    base = address & ~(CODE_PAGE_BYTES - 1u);
+    page = get_code_page(base);
+    func = page->func;
+    decoded = page->decoded;
+
+dispatch:
+    switch ((address - base) / 2) {
+    case 0: goto slot_0;
+    case 1: goto slot_1;
+    case 2: goto slot_2;
+    case 3: goto slot_3;
+    case 4: goto slot_4;
+    case 5: goto slot_5;
+    case 6: goto slot_6;
+    case 7: goto slot_7;
+    case 8: goto slot_8;
+    case 9: goto slot_9;
+    case 10: goto slot_10;
+    case 11: goto slot_11;
+    case 12: goto slot_12;
+    case 13: goto slot_13;
+    case 14: goto slot_14;
+    case 15: goto slot_15;
+    case 16: goto slot_16;
+    case 17: goto slot_17;
+    case 18: goto slot_18;
+    case 19: goto slot_19;
+    case 20: goto slot_20;
+    case 21: goto slot_21;
+    case 22: goto slot_22;
+    case 23: goto slot_23;
+    case 24: goto slot_24;
+    case 25: goto slot_25;
+    case 26: goto slot_26;
+    case 27: goto slot_27;
+    case 28: goto slot_28;
+    case 29: goto slot_29;
+    case 30: goto slot_30;
+    case 31: goto slot_31;
+#if CODE_PAGE_BYTES == 128
+    case 32: goto slot_32;
+    case 33: goto slot_33;
+    case 34: goto slot_34;
+    case 35: goto slot_35;
+    case 36: goto slot_36;
+    case 37: goto slot_37;
+    case 38: goto slot_38;
+    case 39: goto slot_39;
+    case 40: goto slot_40;
+    case 41: goto slot_41;
+    case 42: goto slot_42;
+    case 43: goto slot_43;
+    case 44: goto slot_44;
+    case 45: goto slot_45;
+    case 46: goto slot_46;
+    case 47: goto slot_47;
+    case 48: goto slot_48;
+    case 49: goto slot_49;
+    case 50: goto slot_50;
+    case 51: goto slot_51;
+    case 52: goto slot_52;
+    case 53: goto slot_53;
+    case 54: goto slot_54;
+    case 55: goto slot_55;
+    case 56: goto slot_56;
+    case 57: goto slot_57;
+    case 58: goto slot_58;
+    case 59: goto slot_59;
+    case 60: goto slot_60;
+    case 61: goto slot_61;
+    case 62: goto slot_62;
+    case 63: goto slot_63;
+#endif
     }
+    return 0;
 
-
-    //--- F000 ---
-    //B(1) conditional branch
-    if((inst&0xF000)==0xD000)
-    {
-        rb=(inst>>0)&0xFF;
-        if(rb&0x80) rb|=(MINUS_ONE)<<8;
-        op=(inst>>8)&0xF;
-        rb<<=1;
-        rb+=pc;
-        rb+=2;
-        switch(op)
-        {
-            case 0x0: //b eq  z set
-if(DISS) fprintf(stderr,"beq   0x%08X",rb-3);
-                if(cpsr&CPSR_Z)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x1: //b ne  z clear
-if(DISS) fprintf(stderr,"bne   0x%08X",rb-3);
-                if(!(cpsr&CPSR_Z))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x2: //b cs c set
-if(DISS) fprintf(stderr,"bcs   0x%08X",rb-3);
-                if(cpsr&CPSR_C)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x3: //b cc c clear
-if(DISS) fprintf(stderr,"bcc   0x%08X",rb-3);
-                if(!(cpsr&CPSR_C))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x4: //b mi n set
-if(DISS) fprintf(stderr,"bmi   0x%08X",rb-3);
-                if(cpsr&CPSR_N)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x5: //b pl n clear
-if(DISS) fprintf(stderr,"bpl   0x%08X",rb-3);
-                if(!(cpsr&CPSR_N))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-
-            case 0x6: //b vs v set
-if(DISS) fprintf(stderr,"bvs   0x%08X",rb-3);
-                if(cpsr&CPSR_V)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x7: //b vc v clear
-if(DISS) fprintf(stderr,"bvc   0x%08X",rb-3);
-                if(!(cpsr&CPSR_V))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-
-            case 0x8: //b hi c set z clear
-if(DISS) fprintf(stderr,"bhi   0x%08X",rb-3);
-                if((cpsr&CPSR_C)&&(!(cpsr&CPSR_Z)))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0x9: //b ls c clear or z set
-if(DISS) fprintf(stderr,"bls   0x%08X",rb-3);
-                if((cpsr&CPSR_Z)||(!(cpsr&CPSR_C)))
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0xA: //b ge N == V
-if(DISS) fprintf(stderr,"bge   0x%08X",rb-3);
-                ra=0;
-                if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
-                if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
-                if(ra)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0xB: //b lt N != V
-if(DISS) fprintf(stderr,"blt   0x%08X",rb-3);
-                ra=0;
-                if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
-                if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
-                if(ra)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0xC: //b gt Z==0 and N == V
-if(DISS) fprintf(stderr,"bgt   0x%08X",rb-3);
-                ra=0;
-                if(  (cpsr&CPSR_N) &&  (cpsr&CPSR_V) ) ra++;
-                if((!(cpsr&CPSR_N))&&(!(cpsr&CPSR_V))) ra++;
-                if(cpsr&CPSR_Z) ra=0;
-                if(ra)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0xD: //b le Z==1 or N != V
-if(DISS) fprintf(stderr,"ble   0x%08X",rb-3);
-                ra=0;
-                if((!(cpsr&CPSR_N))&&(cpsr&CPSR_V)) ra++;
-                if((!(cpsr&CPSR_V))&&(cpsr&CPSR_N)) ra++;
-                if(cpsr&CPSR_Z) ra++;
-                if(ra)
-                {
-                    write_register(15,rb); clks++;
-                }
-                goto Return;
-
-            case 0xE:
-                //undefined instruction
-                break;
-            case 0xF:
-                //swi
-                break;
-        }
+// A slot has a fixed offset and fixed operand index. Straight-line code
+// falls through to the next call. The checks preserve per-instruction
+// timing, interrupt delivery, input polling, and changes to the PC.
+#define RUN_SLOT(n)                                                           \
+    slot_##n: {                                                               \
+        const unsigned int pc = base + 2 * (n) + 4;                           \
+        const unsigned long previous_clks = clks;                             \
+        fetches += decoded[n].width;                                          \
+        clks += decoded[n].width;                                             \
+        COUNT_PAGE_INSTRUCTION();                                             \
+        instructions++;                                                       \
+        reg_norm[15] = pc;                                                    \
+        if (func[n](pc, &decoded[n])) return 1;                               \
+        advance_systick(clks - previous_clks);                                \
+        if (waiting != NoWait || (instructions & 0x7F) == 0 || interrupt_due())\
+            return 0;                                                         \
+        if (reg_norm[15] != pc) goto redirected;                              \
     }
 
-    // SVC stacks the following instruction as its return address.
-    if ((inst & 0xFF00) == 0xDF00) {
-        unsigned int vector;
-        if (DISS) fprintf(stderr, "svc #%u", inst & 255);
-        if (!can_take_exception(EXCEPTION_SVC))
-            return hardfault("SVCall priority escalation", pc - 2);
-        vector = fetch32(entry + 4 * EXCEPTION_SVC);
-        if (!valid_vector(vector))
-            return hardfault("Invalid SVCall vector", pc - 2);
-        write_register(15, enter_exception(EXCEPTION_SVC, pc - 2, vector));
-        goto Return;
-    }
-goto ErrOut;
-case 0xE000:
+    RUN_SLOT(0);
+    RUN_SLOT(1);
+    RUN_SLOT(2);
+    RUN_SLOT(3);
+    RUN_SLOT(4);
+    RUN_SLOT(5);
+    RUN_SLOT(6);
+    RUN_SLOT(7);
+    RUN_SLOT(8);
+    RUN_SLOT(9);
+    RUN_SLOT(10);
+    RUN_SLOT(11);
+    RUN_SLOT(12);
+    RUN_SLOT(13);
+    RUN_SLOT(14);
+    RUN_SLOT(15);
+    RUN_SLOT(16);
+    RUN_SLOT(17);
+    RUN_SLOT(18);
+    RUN_SLOT(19);
+    RUN_SLOT(20);
+    RUN_SLOT(21);
+    RUN_SLOT(22);
+    RUN_SLOT(23);
+    RUN_SLOT(24);
+    RUN_SLOT(25);
+    RUN_SLOT(26);
+    RUN_SLOT(27);
+    RUN_SLOT(28);
+    RUN_SLOT(29);
+    RUN_SLOT(30);
+    RUN_SLOT(31);
+#if CODE_PAGE_BYTES == 128
+    RUN_SLOT(32);
+    RUN_SLOT(33);
+    RUN_SLOT(34);
+    RUN_SLOT(35);
+    RUN_SLOT(36);
+    RUN_SLOT(37);
+    RUN_SLOT(38);
+    RUN_SLOT(39);
+    RUN_SLOT(40);
+    RUN_SLOT(41);
+    RUN_SLOT(42);
+    RUN_SLOT(43);
+    RUN_SLOT(44);
+    RUN_SLOT(45);
+    RUN_SLOT(46);
+    RUN_SLOT(47);
+    RUN_SLOT(48);
+    RUN_SLOT(49);
+    RUN_SLOT(50);
+    RUN_SLOT(51);
+    RUN_SLOT(52);
+    RUN_SLOT(53);
+    RUN_SLOT(54);
+    RUN_SLOT(55);
+    RUN_SLOT(56);
+    RUN_SLOT(57);
+    RUN_SLOT(58);
+    RUN_SLOT(59);
+    RUN_SLOT(60);
+    RUN_SLOT(61);
+    RUN_SLOT(62);
+    RUN_SLOT(63);
+#endif
+#undef RUN_SLOT
 
-    //B(2) unconditional branch
-    if((inst&0xF800)==0xE000)
-    {
-        rb=(inst>>0)&0x7FF;
-        if(rb&(1<<10)) rb|=(MINUS_ONE)<<11;
-        rb<<=1;
-        rb+=pc;
-        rb+=2;
-if(DISS) fprintf(stderr,"b     0x%08X",rb-4);
-        write_register(15,rb); clks++;
-        goto Return;
-    }
-    goto ErrOut;
-} /* SWITCH END */
-
-ErrOut:
-    fprintf(stderr,"invalid instruction 0x%08X 0x%04X",pc-4,inst);
-    if (inst >= 0xE800) fprintf(stderr," 0x%04X",second);
-    fputc('\n', stderr);
-    return(1);
-
-Return:
-    if (DISS) fprintf(stderr,sym ? " ; %s\n" : "\n", sym);
+redirected:
+    address = reg_norm[15] - 2;
+    if ((address & ~(CODE_PAGE_BYTES - 1u)) == base) goto dispatch;
+    if (page_address(address)) goto transfer;
     return 0;
 }
+
 //-------------------------------------------------------------------
 int reset ( void )
 {
@@ -3666,11 +4919,20 @@ int run ( void )
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
+        if (page_address(reg_norm[15] - 2) && !interrupt_due() &&
+            !DBUG && !DBUGFETCH && !DBUGREG && !DISS && !output_vcd) {
+            if (execute_page()) break;
+            continue;
+        }
         previous_clks = clks;
         if (execute()) break;
         advance_systick(clks - previous_clks);
     }
     esp_close();
+    for (unsigned int i = 0; i < PAGE_COUNT; ++i) {
+        free(code_pages[i]);
+        code_pages[i] = NULL;
+    }
     dump_counters();
     return(0);
 }

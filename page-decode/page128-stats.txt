@@ -1,0 +1,1 @@
+pages decoded=75 page instructions=172566394 single instructions=54820 page bytes=1024 directory bytes=65536
