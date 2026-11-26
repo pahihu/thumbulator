@@ -1144,35 +1144,45 @@ void dump_registers(void) {
     fprintf(stderr,"\n");
 }       
 //-------------------------------------------------------------------
-// The folded ROM halfword index is shared with the previous decode cache.
-// ROM is immutable during execution. RAM and tracing use an uncached entry.
-enum { CACHE_BITS = 10, CACHE_SIZE = 1 << CACHE_BITS };
-enum { CACHE_VALID = 0x4000, CACHE_WIDE = 0x8000 };
+#ifndef CODE_PAGE_BYTES
+#define CODE_PAGE_BYTES 128
+#endif
+#if CODE_PAGE_BYTES != 64 && CODE_PAGE_BYTES != 128
+#error CODE_PAGE_BYTES must be 64 or 128
+#endif
+
+enum { PAGE_SLOTS = CODE_PAGE_BYTES / 2, PAGE_COUNT = ROMSIZE / CODE_PAGE_BYTES };
 enum { NO_TRACE_SUFFIX = 2 };
 
-typedef struct DecodedInstruction DecodedInstruction;
+typedef struct {
+    uint32_t operand; // Immediate, register list, or third register
+    uint8_t reg1, reg2;
+    uint8_t width; // Fetched halfwords. Zero marks a slot on a cold page.
+} DecodedInstruction;
+
 typedef int (*InstructionExecutor)(unsigned int pc, const DecodedInstruction *decoded);
 
-struct DecodedInstruction {
-    InstructionExecutor execute;
-    uint32_t operand; // Immediate, register list, or third register
-    uint16_t tag;     // ROM tag, valid bit, and wide-instruction bit
-    uint8_t reg1, reg2;
-};
+typedef struct {
+    InstructionExecutor func[PAGE_SLOTS];
+    DecodedInstruction decoded[PAGE_SLOTS];
+} CodePage;
 
-_Static_assert((ROMADDMASK >> (1 + CACHE_BITS)) < CACHE_VALID,
-               "ROM tag must fit below the cache flags");
-static DecodedInstruction cache[CACHE_SIZE];
+// One directory entry per physical ROM page. Pages live until the run ends.
+static CodePage *code_pages[PAGE_COUNT];
 
-#if CACHE_STATS
-static unsigned long cache_hits, cache_misses, uncached_instructions;
+#if PAGE_STATS
+static unsigned long pages_decoded, page_instructions, single_instructions;
+#define COUNT_PAGE_INSTRUCTION() (++page_instructions)
+#else
+#define COUNT_PAGE_INSTRUCTION() ((void)0)
 #endif
 
 void dump_counters ( void )
 {
-#if CACHE_STATS
-    fprintf(stderr, "cache hits=%lu misses=%lu uncached=%lu bytes=%zu\n",
-            cache_hits, cache_misses, uncached_instructions, sizeof(cache));
+#if PAGE_STATS
+    fprintf(stderr, "pages decoded=%lu page instructions=%lu single instructions=%lu "
+            "page bytes=%zu directory bytes=%zu\n", pages_decoded,
+            page_instructions, single_instructions, sizeof(CodePage), sizeof(code_pages));
 #endif
     printf("\n\n");
     printf("clocks       %lu\n",clks);
@@ -1878,12 +1888,11 @@ static int execute_mrs(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mrs(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mrs(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr >> 24) & 15;
     decoded->operand = (instr >> 16) & 255;
-    decoded->execute = execute_mrs;
-    return execute_mrs(pc, decoded);
+    return execute_mrs;
 }
 
 static int execute_msr(unsigned int pc, const DecodedInstruction *decoded)
@@ -1898,12 +1907,11 @@ static int execute_msr(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_msr(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_msr(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr & 15;
     decoded->operand = (instr >> 16) & 255;
-    decoded->execute = execute_msr;
-    return execute_msr(pc, decoded);
+    return execute_msr;
 }
 
 static int execute_dsb(unsigned int pc, const DecodedInstruction *decoded)
@@ -1915,10 +1923,9 @@ static int execute_dsb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_dsb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_dsb(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_dsb;
-    return execute_dsb(pc, decoded);
+    return execute_dsb;
 }
 
 static int execute_dmb(unsigned int pc, const DecodedInstruction *decoded)
@@ -1930,10 +1937,9 @@ static int execute_dmb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_dmb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_dmb(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_dmb;
-    return execute_dmb(pc, decoded);
+    return execute_dmb;
 }
 
 static int execute_isb(unsigned int pc, const DecodedInstruction *decoded)
@@ -1945,10 +1951,9 @@ static int execute_isb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_isb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_isb(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_isb;
-    return execute_isb(pc, decoded);
+    return execute_isb;
 }
 
 static int execute_udf_w(unsigned int pc, const DecodedInstruction *decoded)
@@ -1959,11 +1964,10 @@ static int execute_udf_w(unsigned int pc, const DecodedInstruction *decoded)
     return without_trace_suffix(hardfault("UDF", pc - 4));
 }
 
-static int decode_udf_w(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_udf_w(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 15) << 12) | ((instr >> 16) & 0xFFF);
-    decoded->execute = execute_udf_w;
-    return execute_udf_w(pc, decoded);
+    return execute_udf_w;
 }
 
 static int execute_bl(unsigned int pc, const DecodedInstruction *decoded)
@@ -1977,7 +1981,7 @@ static int execute_bl(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bl(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bl(unsigned int instr, DecodedInstruction *decoded)
 {
     unsigned int second = instr >> 16;
     unsigned int sign = (instr >> 10) & 1;
@@ -1988,8 +1992,7 @@ static int decode_bl(unsigned int pc, unsigned int instr, DecodedInstruction *de
 
     if (sign) offset |= 0xFF000000u;
     decoded->operand = offset;
-    decoded->execute = execute_bl;
-    return execute_bl(pc, decoded);
+    return execute_bl;
 }
 
 static int execute_lsl_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -2019,13 +2022,12 @@ static int execute_lsl_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_lsl_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_lsl_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = (instr>>6)&0x1F;
-    decoded->execute = execute_lsl_imm;
-    return execute_lsl_imm(pc, decoded);
+    return execute_lsl_imm;
 }
 
 static int execute_lsr_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -2053,13 +2055,12 @@ static int execute_lsr_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_lsr_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_lsr_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = (instr>>6)&0x1F;
-    decoded->execute = execute_lsr_imm;
-    return execute_lsr_imm(pc, decoded);
+    return execute_lsr_imm;
 }
 
 static int execute_asr_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -2101,13 +2102,12 @@ static int execute_asr_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_asr_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_asr_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = (instr>>6)&0x1F;
-    decoded->execute = execute_asr_imm;
-    return execute_asr_imm(pc, decoded);
+    return execute_asr_imm;
 }
 
 static int execute_add_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2131,13 +2131,12 @@ static int execute_add_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_add_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_add_reg;
-    return execute_add_reg(pc, decoded);
+    return execute_add_reg;
 }
 
 static int execute_sub_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2161,13 +2160,12 @@ static int execute_sub_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sub_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sub_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_sub_reg;
-    return execute_sub_reg(pc, decoded);
+    return execute_sub_reg;
 }
 
 static int execute_add_imm3(unsigned int pc, const DecodedInstruction *decoded)
@@ -2190,13 +2188,12 @@ static int execute_add_imm3(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_add_imm3(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_imm3(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&7;
     decoded->reg2 = (instr>>3)&7;
     decoded->operand = (instr>>6)&7;
-    decoded->execute = execute_add_imm3;
-    return execute_add_imm3(pc, decoded);
+    return execute_add_imm3;
 }
 
 static int execute_mov_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2216,12 +2213,11 @@ static int execute_mov_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mov_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mov_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&7;
     decoded->operand = (instr>>3)&7;
-    decoded->execute = execute_mov_reg;
-    return execute_mov_reg(pc, decoded);
+    return execute_mov_reg;
 }
 
 static int execute_sub_imm3(unsigned int pc, const DecodedInstruction *decoded)
@@ -2243,13 +2239,12 @@ static int execute_sub_imm3(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sub_imm3(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sub_imm3(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&7;
     decoded->reg2 = (instr>>3)&7;
     decoded->operand = (instr>>6)&7;
-    decoded->execute = execute_sub_imm3;
-    return execute_sub_imm3(pc, decoded);
+    return execute_sub_imm3;
 }
 
 static int execute_mov_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -2264,12 +2259,11 @@ static int execute_mov_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mov_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mov_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = instr&0xFF;
-    decoded->execute = execute_mov_imm;
-    return execute_mov_imm(pc, decoded);
+    return execute_mov_imm;
 }
 
 static int execute_cmp_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -2290,12 +2284,11 @@ static int execute_cmp_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cmp_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cmp_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = instr&0xFF;
-    decoded->execute = execute_cmp_imm;
-    return execute_cmp_imm(pc, decoded);
+    return execute_cmp_imm;
 }
 
 static int execute_add_imm8(unsigned int pc, const DecodedInstruction *decoded)
@@ -2316,12 +2309,11 @@ static int execute_add_imm8(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_add_imm8(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_imm8(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x7;
     decoded->operand = instr&0xFF;
-    decoded->execute = execute_add_imm8;
-    return execute_add_imm8(pc, decoded);
+    return execute_add_imm8;
 }
 
 static int execute_sub_imm8(unsigned int pc, const DecodedInstruction *decoded)
@@ -2342,12 +2334,11 @@ static int execute_sub_imm8(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sub_imm8(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sub_imm8(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = instr&0xFF;
-    decoded->execute = execute_sub_imm8;
-    return execute_sub_imm8(pc, decoded);
+    return execute_sub_imm8;
 }
 
 static int execute_and(unsigned int pc, const DecodedInstruction *decoded)
@@ -2368,12 +2359,11 @@ static int execute_and(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_and(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_and(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_and;
-    return execute_and(pc, decoded);
+    return execute_and;
 }
 
 static int execute_eor(unsigned int pc, const DecodedInstruction *decoded)
@@ -2394,12 +2384,11 @@ static int execute_eor(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_eor(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_eor(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_eor;
-    return execute_eor(pc, decoded);
+    return execute_eor;
 }
 
 static int execute_lsl_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2437,12 +2426,11 @@ static int execute_lsl_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_lsl_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_lsl_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->operand = (instr>>3)&0x07;
-    decoded->execute = execute_lsl_reg;
-    return execute_lsl_reg(pc, decoded);
+    return execute_lsl_reg;
 }
 
 static int execute_lsr_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2480,12 +2468,11 @@ static int execute_lsr_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_lsr_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_lsr_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->operand = (instr>>3)&0x07;
-    decoded->execute = execute_lsr_reg;
-    return execute_lsr_reg(pc, decoded);
+    return execute_lsr_reg;
 }
 
 static int execute_asr_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2532,12 +2519,11 @@ static int execute_asr_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_asr_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_asr_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->operand = (instr>>3)&0x07;
-    decoded->execute = execute_asr_reg;
-    return execute_asr_reg(pc, decoded);
+    return execute_asr_reg;
 }
 
 static int execute_adc(unsigned int pc, const DecodedInstruction *decoded)
@@ -2561,12 +2547,11 @@ static int execute_adc(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_adc(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_adc(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->operand = (instr>>3)&0x07;
-    decoded->execute = execute_adc;
-    return execute_adc(pc, decoded);
+    return execute_adc;
 }
 
 static int execute_sbc(unsigned int pc, const DecodedInstruction *decoded)
@@ -2598,12 +2583,11 @@ static int execute_sbc(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sbc(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sbc(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_sbc;
-    return execute_sbc(pc, decoded);
+    return execute_sbc;
 }
 
 static int execute_ror(unsigned int pc, const DecodedInstruction *decoded)
@@ -2642,12 +2626,11 @@ static int execute_ror(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ror(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ror(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_ror;
-    return execute_ror(pc, decoded);
+    return execute_ror;
 }
 
 static int execute_tst(unsigned int pc, const DecodedInstruction *decoded)
@@ -2667,12 +2650,11 @@ static int execute_tst(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_tst(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_tst(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_tst;
-    return execute_tst(pc, decoded);
+    return execute_tst;
 }
 
 static int execute_neg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2693,12 +2675,11 @@ static int execute_neg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_neg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_neg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_neg;
-    return execute_neg(pc, decoded);
+    return execute_neg;
 }
 
 static int execute_cmp_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -2721,12 +2702,11 @@ static int execute_cmp_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cmp_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cmp_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_cmp_reg;
-    return execute_cmp_reg(pc, decoded);
+    return execute_cmp_reg;
 }
 
 static int execute_cmn(unsigned int pc, const DecodedInstruction *decoded)
@@ -2748,12 +2728,11 @@ static int execute_cmn(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cmn(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cmn(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_cmn;
-    return execute_cmn(pc, decoded);
+    return execute_cmn;
 }
 
 static int execute_orr(unsigned int pc, const DecodedInstruction *decoded)
@@ -2774,12 +2753,11 @@ static int execute_orr(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_orr(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_orr(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_orr;
-    return execute_orr(pc, decoded);
+    return execute_orr;
 }
 
 static int execute_mul(unsigned int pc, const DecodedInstruction *decoded)
@@ -2800,12 +2778,11 @@ static int execute_mul(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mul(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mul(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_mul;
-    return execute_mul(pc, decoded);
+    return execute_mul;
 }
 
 static int execute_bic(unsigned int pc, const DecodedInstruction *decoded)
@@ -2826,12 +2803,11 @@ static int execute_bic(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bic(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bic(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_bic;
-    return execute_bic(pc, decoded);
+    return execute_bic;
 }
 
 static int execute_mvn(unsigned int pc, const DecodedInstruction *decoded)
@@ -2850,12 +2826,11 @@ static int execute_mvn(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mvn(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mvn(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_mvn;
-    return execute_mvn(pc, decoded);
+    return execute_mvn;
 }
 
 static int execute_add_high(unsigned int pc, const DecodedInstruction *decoded)
@@ -2887,12 +2862,11 @@ static int execute_add_high(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_add_high(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_high(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
     decoded->operand = (instr>>3)&0xF;
-    decoded->execute = execute_add_high;
-    return execute_add_high(pc, decoded);
+    return execute_add_high;
 }
 
 static int execute_cmp_high(unsigned int pc, const DecodedInstruction *decoded)
@@ -2914,12 +2888,11 @@ static int execute_cmp_high(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cmp_high(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cmp_high(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
     decoded->operand = (instr>>3)&0xF;
-    decoded->execute = execute_cmp_high;
-    return execute_cmp_high(pc, decoded);
+    return execute_cmp_high;
 }
 
 static int execute_mov_high(unsigned int pc, const DecodedInstruction *decoded)
@@ -2940,12 +2913,11 @@ static int execute_mov_high(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_mov_high(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_mov_high(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr&0x7) | ((instr>>4)&0x8);
     decoded->operand = (instr>>3)&0xF;
-    decoded->execute = execute_mov_high;
-    return execute_mov_high(pc, decoded);
+    return execute_mov_high;
 }
 
 static int execute_bx(unsigned int pc, const DecodedInstruction *decoded)
@@ -2970,11 +2942,10 @@ static int execute_bx(unsigned int pc, const DecodedInstruction *decoded)
     }
 }
 
-static int decode_bx(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bx(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = (instr>>3)&0xF;
-    decoded->execute = execute_bx;
-    return execute_bx(pc, decoded);
+    return execute_bx;
 }
 
 static int execute_blx_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3000,11 +2971,10 @@ static int execute_blx_reg(unsigned int pc, const DecodedInstruction *decoded)
     }
 }
 
-static int decode_blx_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_blx_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = (instr>>3)&0xF;
-    decoded->execute = execute_blx_reg;
-    return execute_blx_reg(pc, decoded);
+    return execute_blx_reg;
 }
 
 static int execute_ldr_literal(unsigned int pc, const DecodedInstruction *decoded)
@@ -3024,12 +2994,11 @@ static int execute_ldr_literal(unsigned int pc, const DecodedInstruction *decode
     return 0;
 }
 
-static int decode_ldr_literal(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldr_literal(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = (instr&0xFF) << 2;
-    decoded->execute = execute_ldr_literal;
-    return execute_ldr_literal(pc, decoded);
+    return execute_ldr_literal;
 }
 
 static int execute_str_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3047,13 +3016,12 @@ static int execute_str_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_str_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_str_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_str_reg;
-    return execute_str_reg(pc, decoded);
+    return execute_str_reg;
 }
 
 static int execute_strh_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3071,13 +3039,12 @@ static int execute_strh_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_strh_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_strh_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_strh_reg;
-    return execute_strh_reg(pc, decoded);
+    return execute_strh_reg;
 }
 
 static int execute_strb_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3107,13 +3074,12 @@ static int execute_strb_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_strb_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_strb_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_strb_reg;
-    return execute_strb_reg(pc, decoded);
+    return execute_strb_reg;
 }
 
 static int execute_ldrsb(unsigned int pc, const DecodedInstruction *decoded)
@@ -3138,13 +3104,12 @@ static int execute_ldrsb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrsb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrsb(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_ldrsb;
-    return execute_ldrsb(pc, decoded);
+    return execute_ldrsb;
 }
 
 static int execute_ldr_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3162,13 +3127,12 @@ static int execute_ldr_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldr_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldr_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_ldr_reg;
-    return execute_ldr_reg(pc, decoded);
+    return execute_ldr_reg;
 }
 
 static int execute_ldrh_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3186,13 +3150,12 @@ static int execute_ldrh_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrh_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrh_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_ldrh_reg;
-    return execute_ldrh_reg(pc, decoded);
+    return execute_ldrh_reg;
 }
 
 static int execute_ldrb_reg(unsigned int pc, const DecodedInstruction *decoded)
@@ -3215,13 +3178,12 @@ static int execute_ldrb_reg(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrb_reg(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrb_reg(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_ldrb_reg;
-    return execute_ldrb_reg(pc, decoded);
+    return execute_ldrb_reg;
 }
 
 static int execute_ldrsh(unsigned int pc, const DecodedInstruction *decoded)
@@ -3241,13 +3203,12 @@ static int execute_ldrsh(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrsh(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrsh(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->reg2 = (instr>>3)&0x7;
     decoded->operand = (instr>>6)&0x7;
-    decoded->execute = execute_ldrsh;
-    return execute_ldrsh(pc, decoded);
+    return execute_ldrsh;
 }
 
 static int execute_str_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3264,13 +3225,12 @@ static int execute_str_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_str_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_str_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = ((instr>>6)&0x1F) << 2;
-    decoded->execute = execute_str_imm;
-    return execute_str_imm(pc, decoded);
+    return execute_str_imm;
 }
 
 static int execute_ldr_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3287,13 +3247,12 @@ static int execute_ldr_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldr_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldr_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = ((instr>>6)&0x1F) << 2;
-    decoded->execute = execute_ldr_imm;
-    return execute_ldr_imm(pc, decoded);
+    return execute_ldr_imm;
 }
 
 static int execute_strb_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3322,13 +3281,12 @@ static int execute_strb_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_strb_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_strb_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = (instr>>6)&0x1F;
-    decoded->execute = execute_strb_imm;
-    return execute_strb_imm(pc, decoded);
+    return execute_strb_imm;
 }
 
 static int execute_ldrb_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3350,13 +3308,12 @@ static int execute_ldrb_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrb_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrb_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = (instr>>6)&0x1F;
-    decoded->execute = execute_ldrb_imm;
-    return execute_ldrb_imm(pc, decoded);
+    return execute_ldrb_imm;
 }
 
 static int execute_strh_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3373,13 +3330,12 @@ static int execute_strh_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_strh_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_strh_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = ((instr>>6)&0x1F) << 1;
-    decoded->execute = execute_strh_imm;
-    return execute_strh_imm(pc, decoded);
+    return execute_strh_imm;
 }
 
 static int execute_ldrh_imm(unsigned int pc, const DecodedInstruction *decoded)
@@ -3396,13 +3352,12 @@ static int execute_ldrh_imm(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldrh_imm(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldrh_imm(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x07;
     decoded->reg2 = (instr>>3)&0x07;
     decoded->operand = ((instr>>6)&0x1F) << 1;
-    decoded->execute = execute_ldrh_imm;
-    return execute_ldrh_imm(pc, decoded);
+    return execute_ldrh_imm;
 }
 
 static int execute_str_sp(unsigned int pc, const DecodedInstruction *decoded)
@@ -3419,12 +3374,11 @@ static int execute_str_sp(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_str_sp(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_str_sp(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = (instr&0xFF) << 2;
-    decoded->execute = execute_str_sp;
-    return execute_str_sp(pc, decoded);
+    return execute_str_sp;
 }
 
 static int execute_ldr_sp(unsigned int pc, const DecodedInstruction *decoded)
@@ -3443,12 +3397,11 @@ static int execute_ldr_sp(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldr_sp(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldr_sp(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x07;
     decoded->operand = (instr&0xFF) << 2;
-    decoded->execute = execute_ldr_sp;
-    return execute_ldr_sp(pc, decoded);
+    return execute_ldr_sp;
 }
 
 static int execute_adr(unsigned int pc, const DecodedInstruction *decoded)
@@ -3465,12 +3418,11 @@ static int execute_adr(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_adr(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_adr(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x7;
     decoded->operand = (instr&0xFF) << 2;
-    decoded->execute = execute_adr;
-    return execute_adr(pc, decoded);
+    return execute_adr;
 }
 
 static int execute_add_from_sp(unsigned int pc, const DecodedInstruction *decoded)
@@ -3487,12 +3439,11 @@ static int execute_add_from_sp(unsigned int pc, const DecodedInstruction *decode
     return 0;
 }
 
-static int decode_add_from_sp(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_from_sp(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x7;
     decoded->operand = (instr&0xFF) << 2;
-    decoded->execute = execute_add_from_sp;
-    return execute_add_from_sp(pc, decoded);
+    return execute_add_from_sp;
 }
 
 static int execute_add_sp(unsigned int pc, const DecodedInstruction *decoded)
@@ -3508,11 +3459,10 @@ static int execute_add_sp(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_add_sp(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_add_sp(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = (instr&0x7F) << 2;
-    decoded->execute = execute_add_sp;
-    return execute_add_sp(pc, decoded);
+    return execute_add_sp;
 }
 
 static int execute_sub_sp(unsigned int pc, const DecodedInstruction *decoded)
@@ -3527,11 +3477,10 @@ static int execute_sub_sp(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sub_sp(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sub_sp(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = (instr&0x7F) << 2;
-    decoded->execute = execute_sub_sp;
-    return execute_sub_sp(pc, decoded);
+    return execute_sub_sp;
 }
 
 static int execute_sxth(unsigned int pc, const DecodedInstruction *decoded)
@@ -3545,12 +3494,11 @@ static int execute_sxth(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sxth(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sxth(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr & 7;
     decoded->operand = (instr >> 3) & 7;
-    decoded->execute = execute_sxth;
-    return execute_sxth(pc, decoded);
+    return execute_sxth;
 }
 
 static int execute_sxtb(unsigned int pc, const DecodedInstruction *decoded)
@@ -3564,12 +3512,11 @@ static int execute_sxtb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sxtb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sxtb(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr & 7;
     decoded->operand = (instr >> 3) & 7;
-    decoded->execute = execute_sxtb;
-    return execute_sxtb(pc, decoded);
+    return execute_sxtb;
 }
 
 static int execute_uxth(unsigned int pc, const DecodedInstruction *decoded)
@@ -3586,12 +3533,11 @@ static int execute_uxth(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_uxth(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_uxth(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_uxth;
-    return execute_uxth(pc, decoded);
+    return execute_uxth;
 }
 
 static int execute_uxtb(unsigned int pc, const DecodedInstruction *decoded)
@@ -3608,12 +3554,11 @@ static int execute_uxtb(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_uxtb(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_uxtb(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_uxtb;
-    return execute_uxtb(pc, decoded);
+    return execute_uxtb;
 }
 
 static int execute_push(unsigned int pc, const DecodedInstruction *decoded)
@@ -3682,11 +3627,10 @@ static int execute_push(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_push(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_push(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = instr & 0x1FF;
-    decoded->execute = execute_push;
-    return execute_push(pc, decoded);
+    return execute_push;
 }
 
 static int execute_setend(unsigned int pc, const DecodedInstruction *decoded)
@@ -3695,10 +3639,9 @@ static int execute_setend(unsigned int pc, const DecodedInstruction *decoded)
     return(1);
 }
 
-static int decode_setend(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_setend(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_setend;
-    return execute_setend(pc, decoded);
+    return execute_setend;
 }
 
 static int execute_cpsie(unsigned int pc, const DecodedInstruction *decoded)
@@ -3708,10 +3651,9 @@ static int execute_cpsie(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cpsie(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cpsie(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_cpsie;
-    return execute_cpsie(pc, decoded);
+    return execute_cpsie;
 }
 
 static int execute_cpsid(unsigned int pc, const DecodedInstruction *decoded)
@@ -3721,10 +3663,9 @@ static int execute_cpsid(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_cpsid(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_cpsid(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_cpsid;
-    return execute_cpsid(pc, decoded);
+    return execute_cpsid;
 }
 
 static int execute_rev(unsigned int pc, const DecodedInstruction *decoded)
@@ -3744,12 +3685,11 @@ static int execute_rev(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_rev(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_rev(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_rev;
-    return execute_rev(pc, decoded);
+    return execute_rev;
 }
 
 static int execute_rev16(unsigned int pc, const DecodedInstruction *decoded)
@@ -3769,12 +3709,11 @@ static int execute_rev16(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_rev16(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_rev16(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_rev16;
-    return execute_rev16(pc, decoded);
+    return execute_rev16;
 }
 
 static int execute_revsh(unsigned int pc, const DecodedInstruction *decoded)
@@ -3794,12 +3733,11 @@ static int execute_revsh(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_revsh(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_revsh(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = instr&0x7;
     decoded->operand = (instr>>3)&0x7;
-    decoded->execute = execute_revsh;
-    return execute_revsh(pc, decoded);
+    return execute_revsh;
 }
 
 static int execute_pop(unsigned int pc, const DecodedInstruction *decoded)
@@ -3856,11 +3794,10 @@ static int execute_pop(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_pop(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_pop(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = instr & 0x1FF;
-    decoded->execute = execute_pop;
-    return execute_pop(pc, decoded);
+    return execute_pop;
 }
 
 static int execute_bkpt(unsigned int pc, const DecodedInstruction *decoded)
@@ -3872,11 +3809,10 @@ static int execute_bkpt(unsigned int pc, const DecodedInstruction *decoded)
     return without_trace_suffix(handle_bkpt(rb, read32(read_register(13))));
 }
 
-static int decode_bkpt(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bkpt(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = instr&0xFF;
-    decoded->execute = execute_bkpt;
-    return execute_bkpt(pc, decoded);
+    return execute_bkpt;
 }
 
 static int execute_yield(unsigned int pc, const DecodedInstruction *decoded)
@@ -3885,10 +3821,9 @@ static int execute_yield(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_yield(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_yield(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_yield;
-    return execute_yield(pc, decoded);
+    return execute_yield;
 }
 
 static int execute_wfe(unsigned int pc, const DecodedInstruction *decoded)
@@ -3900,10 +3835,9 @@ static int execute_wfe(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_wfe(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_wfe(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_wfe;
-    return execute_wfe(pc, decoded);
+    return execute_wfe;
 }
 
 static int execute_wfi(unsigned int pc, const DecodedInstruction *decoded)
@@ -3914,10 +3848,9 @@ static int execute_wfi(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_wfi(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_wfi(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_wfi;
-    return execute_wfi(pc, decoded);
+    return execute_wfi;
 }
 
 static int execute_sev(unsigned int pc, const DecodedInstruction *decoded)
@@ -3927,10 +3860,9 @@ static int execute_sev(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_sev(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_sev(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_sev;
-    return execute_sev(pc, decoded);
+    return execute_sev;
 }
 
 static int execute_nop(unsigned int pc, const DecodedInstruction *decoded)
@@ -3939,10 +3871,9 @@ static int execute_nop(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_nop(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_nop(unsigned int instr, DecodedInstruction *decoded)
 {
-    decoded->execute = execute_nop;
-    return execute_nop(pc, decoded);
+    return execute_nop;
 }
 
 static int execute_stmia(unsigned int pc, const DecodedInstruction *decoded)
@@ -3981,12 +3912,11 @@ static int execute_stmia(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_stmia(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_stmia(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x7;
     decoded->operand = instr & 0xFF;
-    decoded->execute = execute_stmia;
-    return execute_stmia(pc, decoded);
+    return execute_stmia;
 }
 
 static int execute_ldmia(unsigned int pc, const DecodedInstruction *decoded)
@@ -4026,12 +3956,11 @@ static int execute_ldmia(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ldmia(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ldmia(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->reg1 = (instr>>8)&0x7;
     decoded->operand = instr & 0xFF;
-    decoded->execute = execute_ldmia;
-    return execute_ldmia(pc, decoded);
+    return execute_ldmia;
 }
 
 static int execute_udf(unsigned int pc, const DecodedInstruction *decoded)
@@ -4042,11 +3971,10 @@ static int execute_udf(unsigned int pc, const DecodedInstruction *decoded)
     return without_trace_suffix(hardfault("UDF", pc - 4));
 }
 
-static int decode_udf(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_udf(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = instr & 255;
-    decoded->execute = execute_udf;
-    return execute_udf(pc, decoded);
+    return execute_udf;
 }
 
 static int execute_beq(unsigned int pc, const DecodedInstruction *decoded)
@@ -4062,11 +3990,10 @@ static int execute_beq(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_beq(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_beq(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_beq;
-    return execute_beq(pc, decoded);
+    return execute_beq;
 }
 
 static int execute_bne(unsigned int pc, const DecodedInstruction *decoded)
@@ -4082,11 +4009,10 @@ static int execute_bne(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bne(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bne(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bne;
-    return execute_bne(pc, decoded);
+    return execute_bne;
 }
 
 static int execute_bcs(unsigned int pc, const DecodedInstruction *decoded)
@@ -4102,11 +4028,10 @@ static int execute_bcs(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bcs(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bcs(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bcs;
-    return execute_bcs(pc, decoded);
+    return execute_bcs;
 }
 
 static int execute_bcc(unsigned int pc, const DecodedInstruction *decoded)
@@ -4122,11 +4047,10 @@ static int execute_bcc(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bcc(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bcc(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bcc;
-    return execute_bcc(pc, decoded);
+    return execute_bcc;
 }
 
 static int execute_bmi(unsigned int pc, const DecodedInstruction *decoded)
@@ -4142,11 +4066,10 @@ static int execute_bmi(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bmi(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bmi(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bmi;
-    return execute_bmi(pc, decoded);
+    return execute_bmi;
 }
 
 static int execute_bpl(unsigned int pc, const DecodedInstruction *decoded)
@@ -4162,11 +4085,10 @@ static int execute_bpl(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bpl(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bpl(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bpl;
-    return execute_bpl(pc, decoded);
+    return execute_bpl;
 }
 
 static int execute_bvs(unsigned int pc, const DecodedInstruction *decoded)
@@ -4182,11 +4104,10 @@ static int execute_bvs(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bvs(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bvs(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bvs;
-    return execute_bvs(pc, decoded);
+    return execute_bvs;
 }
 
 static int execute_bvc(unsigned int pc, const DecodedInstruction *decoded)
@@ -4202,11 +4123,10 @@ static int execute_bvc(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bvc(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bvc(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bvc;
-    return execute_bvc(pc, decoded);
+    return execute_bvc;
 }
 
 static int execute_bhi(unsigned int pc, const DecodedInstruction *decoded)
@@ -4222,11 +4142,10 @@ static int execute_bhi(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bhi(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bhi(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bhi;
-    return execute_bhi(pc, decoded);
+    return execute_bhi;
 }
 
 static int execute_bls(unsigned int pc, const DecodedInstruction *decoded)
@@ -4242,11 +4161,10 @@ static int execute_bls(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bls(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bls(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bls;
-    return execute_bls(pc, decoded);
+    return execute_bls;
 }
 
 static int execute_bge(unsigned int pc, const DecodedInstruction *decoded)
@@ -4266,11 +4184,10 @@ static int execute_bge(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bge(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bge(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bge;
-    return execute_bge(pc, decoded);
+    return execute_bge;
 }
 
 static int execute_blt(unsigned int pc, const DecodedInstruction *decoded)
@@ -4290,11 +4207,10 @@ static int execute_blt(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_blt(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_blt(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_blt;
-    return execute_blt(pc, decoded);
+    return execute_blt;
 }
 
 static int execute_bgt(unsigned int pc, const DecodedInstruction *decoded)
@@ -4315,11 +4231,10 @@ static int execute_bgt(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_bgt(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_bgt(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_bgt;
-    return execute_bgt(pc, decoded);
+    return execute_bgt;
 }
 
 static int execute_ble(unsigned int pc, const DecodedInstruction *decoded)
@@ -4340,11 +4255,10 @@ static int execute_ble(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_ble(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_ble(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0xFFu) ^ 0x80u) * 2u - 0x100u;
-    decoded->execute = execute_ble;
-    return execute_ble(pc, decoded);
+    return execute_ble;
 }
 
 static int execute_svc(unsigned int pc, const DecodedInstruction *decoded)
@@ -4362,11 +4276,10 @@ static int execute_svc(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_svc(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_svc(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = instr & 255;
-    decoded->execute = execute_svc;
-    return execute_svc(pc, decoded);
+    return execute_svc;
 }
 
 static int execute_b(unsigned int pc, const DecodedInstruction *decoded)
@@ -4380,11 +4293,10 @@ static int execute_b(unsigned int pc, const DecodedInstruction *decoded)
     return 0;
 }
 
-static int decode_b(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_b(unsigned int instr, DecodedInstruction *decoded)
 {
     decoded->operand = ((instr & 0x7FFu) ^ 0x400u) * 2u - 0x800u;
-    decoded->execute = execute_b;
-    return execute_b(pc, decoded);
+    return execute_b;
 }
 
 static int invalid_instruction(unsigned int pc, unsigned int inst, unsigned int second)
@@ -4395,7 +4307,12 @@ static int invalid_instruction(unsigned int pc, unsigned int inst, unsigned int 
     return 1;
 }
 
-static int decode_wide(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static int execute_invalid(unsigned int pc, const DecodedInstruction *decoded)
+{
+    return invalid_instruction(pc, decoded->operand & 0xFFFF, decoded->operand >> 16);
+}
+
+static InstructionExecutor decode_wide(unsigned int instr, DecodedInstruction *decoded)
 {
     unsigned int inst = instr & 0xFFFF;
     unsigned int second = instr >> 16;
@@ -4403,162 +4320,164 @@ static int decode_wide(unsigned int pc, unsigned int instr, DecodedInstruction *
     if (inst == 0xF3EF && (second & 0xF000) == 0x8000) {
         unsigned int rd = (second >> 8) & 15;
         if (rd != 13 && rd != 15)
-            return decode_mrs(pc, instr, decoded);
+            return decode_mrs(instr, decoded);
     }
     if ((inst & 0xFFF0) == 0xF380 && (second & 0xFF00) == 0x8800) {
         unsigned int rn = inst & 15;
         if (rn != 13 && rn != 15)
-            return decode_msr(pc, instr, decoded);
+            return decode_msr(instr, decoded);
     }
     if (inst == 0xF3BF) {
         switch (second & 0xFFF0) {
-        case 0x8F40: return decode_dsb(pc, instr, decoded);
-        case 0x8F50: return decode_dmb(pc, instr, decoded);
-        case 0x8F60: return decode_isb(pc, instr, decoded);
+        case 0x8F40: return decode_dsb(instr, decoded);
+        case 0x8F50: return decode_dmb(instr, decoded);
+        case 0x8F60: return decode_isb(instr, decoded);
         }
     }
     if ((inst & 0xFFF0) == 0xF7F0 && (second & 0xF000) == 0xA000)
-        return decode_udf_w(pc, instr, decoded);
+        return decode_udf_w(instr, decoded);
     if ((inst & 0xF800) == 0xF000 && (second & 0xD000) == 0xD000)
-        return decode_bl(pc, instr, decoded);
-    return invalid_instruction(pc, inst, second);
+        return decode_bl(instr, decoded);
+    decoded->operand = instr;
+    return execute_invalid;
 }
 
-static int decode_narrow(unsigned int pc, unsigned int instr, DecodedInstruction *decoded)
+static InstructionExecutor decode_narrow(unsigned int instr, DecodedInstruction *decoded)
 {
     unsigned int inst = instr;
 
     switch (inst & 0xF000) {
     case 0x0000:
-        if ((inst & 0xF800) == 0x0000) return decode_lsl_imm(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x0800) return decode_lsr_imm(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x0000) return decode_lsl_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x0800) return decode_lsr_imm(instr, decoded);
         break;
     case 0x1000:
-        if ((inst & 0xF800) == 0x1000) return decode_asr_imm(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x1800) return decode_add_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x1A00) return decode_sub_reg(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x1000) return decode_asr_imm(instr, decoded);
+        if ((inst & 0xFE00) == 0x1800) return decode_add_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x1A00) return decode_sub_reg(instr, decoded);
         if ((inst & 0xFE00) == 0x1C00 && (inst & 0x01C0))
-            return decode_add_imm3(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x1C00) return decode_mov_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x1E00) return decode_sub_imm3(pc, instr, decoded);
+            return decode_add_imm3(instr, decoded);
+        if ((inst & 0xFFC0) == 0x1C00) return decode_mov_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x1E00) return decode_sub_imm3(instr, decoded);
         break;
     case 0x2000:
-        if ((inst & 0xF800) == 0x2000) return decode_mov_imm(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x2800) return decode_cmp_imm(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x2000) return decode_mov_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x2800) return decode_cmp_imm(instr, decoded);
         break;
     case 0x3000:
-        if ((inst & 0xF800) == 0x3000) return decode_add_imm8(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x3800) return decode_sub_imm8(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x3000) return decode_add_imm8(instr, decoded);
+        if ((inst & 0xF800) == 0x3800) return decode_sub_imm8(instr, decoded);
         break;
     case 0x4000:
-        if ((inst & 0xFFC0) == 0x4000) return decode_and(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4040) return decode_eor(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4080) return decode_lsl_reg(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x40C0) return decode_lsr_reg(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4100) return decode_asr_reg(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4140) return decode_adc(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4180) return decode_sbc(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x41C0) return decode_ror(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4200) return decode_tst(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4240) return decode_neg(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4280) return decode_cmp_reg(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x42C0) return decode_cmn(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4300) return decode_orr(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4340) return decode_mul(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x4380) return decode_bic(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0x43C0) return decode_mvn(pc, instr, decoded);
-        if ((inst & 0xFF00) == 0x4400) return decode_add_high(pc, instr, decoded);
-        if ((inst & 0xFF00) == 0x4500) return decode_cmp_high(pc, instr, decoded);
-        if ((inst & 0xFF00) == 0x4600) return decode_mov_high(pc, instr, decoded);
-        if ((inst & 0xFF87) == 0x4700) return decode_bx(pc, instr, decoded);
-        if ((inst & 0xFF87) == 0x4780) return decode_blx_reg(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x4800) return decode_ldr_literal(pc, instr, decoded);
+        if ((inst & 0xFFC0) == 0x4000) return decode_and(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4040) return decode_eor(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4080) return decode_lsl_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x40C0) return decode_lsr_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4100) return decode_asr_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4140) return decode_adc(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4180) return decode_sbc(instr, decoded);
+        if ((inst & 0xFFC0) == 0x41C0) return decode_ror(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4200) return decode_tst(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4240) return decode_neg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4280) return decode_cmp_reg(instr, decoded);
+        if ((inst & 0xFFC0) == 0x42C0) return decode_cmn(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4300) return decode_orr(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4340) return decode_mul(instr, decoded);
+        if ((inst & 0xFFC0) == 0x4380) return decode_bic(instr, decoded);
+        if ((inst & 0xFFC0) == 0x43C0) return decode_mvn(instr, decoded);
+        if ((inst & 0xFF00) == 0x4400) return decode_add_high(instr, decoded);
+        if ((inst & 0xFF00) == 0x4500) return decode_cmp_high(instr, decoded);
+        if ((inst & 0xFF00) == 0x4600) return decode_mov_high(instr, decoded);
+        if ((inst & 0xFF87) == 0x4700) return decode_bx(instr, decoded);
+        if ((inst & 0xFF87) == 0x4780) return decode_blx_reg(instr, decoded);
+        if ((inst & 0xF800) == 0x4800) return decode_ldr_literal(instr, decoded);
         break;
     case 0x5000:
-        if ((inst & 0xFE00) == 0x5000) return decode_str_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5200) return decode_strh_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5400) return decode_strb_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5600) return decode_ldrsb(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5800) return decode_ldr_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5A00) return decode_ldrh_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5C00) return decode_ldrb_reg(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0x5E00) return decode_ldrsh(pc, instr, decoded);
+        if ((inst & 0xFE00) == 0x5000) return decode_str_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5200) return decode_strh_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5400) return decode_strb_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5600) return decode_ldrsb(instr, decoded);
+        if ((inst & 0xFE00) == 0x5800) return decode_ldr_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5A00) return decode_ldrh_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5C00) return decode_ldrb_reg(instr, decoded);
+        if ((inst & 0xFE00) == 0x5E00) return decode_ldrsh(instr, decoded);
         break;
     case 0x6000:
-        if ((inst & 0xF800) == 0x6000) return decode_str_imm(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x6800) return decode_ldr_imm(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x6000) return decode_str_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x6800) return decode_ldr_imm(instr, decoded);
         break;
     case 0x7000:
-        if ((inst & 0xF800) == 0x7000) return decode_strb_imm(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x7800) return decode_ldrb_imm(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x7000) return decode_strb_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x7800) return decode_ldrb_imm(instr, decoded);
         break;
     case 0x8000:
-        if ((inst & 0xF800) == 0x8000) return decode_strh_imm(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x8800) return decode_ldrh_imm(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x8000) return decode_strh_imm(instr, decoded);
+        if ((inst & 0xF800) == 0x8800) return decode_ldrh_imm(instr, decoded);
         break;
     case 0x9000:
-        if ((inst & 0xF800) == 0x9000) return decode_str_sp(pc, instr, decoded);
-        if ((inst & 0xF800) == 0x9800) return decode_ldr_sp(pc, instr, decoded);
+        if ((inst & 0xF800) == 0x9000) return decode_str_sp(instr, decoded);
+        if ((inst & 0xF800) == 0x9800) return decode_ldr_sp(instr, decoded);
         break;
     case 0xA000:
-        if ((inst & 0xF800) == 0xA000) return decode_adr(pc, instr, decoded);
-        if ((inst & 0xF800) == 0xA800) return decode_add_from_sp(pc, instr, decoded);
+        if ((inst & 0xF800) == 0xA000) return decode_adr(instr, decoded);
+        if ((inst & 0xF800) == 0xA800) return decode_add_from_sp(instr, decoded);
         break;
     case 0xB000:
-        if ((inst & 0xFF80) == 0xB000) return decode_add_sp(pc, instr, decoded);
-        if ((inst & 0xFF80) == 0xB080) return decode_sub_sp(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xB200) return decode_sxth(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xB240) return decode_sxtb(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xB280) return decode_uxth(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xB2C0) return decode_uxtb(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0xB400) return decode_push(pc, instr, decoded);
-        if ((inst & 0xFFF7) == 0xB650) return decode_setend(pc, instr, decoded);
-        if (inst == 0xB662) return decode_cpsie(pc, instr, decoded);
-        if (inst == 0xB672) return decode_cpsid(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xBA00) return decode_rev(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xBA40) return decode_rev16(pc, instr, decoded);
-        if ((inst & 0xFFC0) == 0xBAC0) return decode_revsh(pc, instr, decoded);
-        if ((inst & 0xFE00) == 0xBC00) return decode_pop(pc, instr, decoded);
-        if ((inst & 0xFF00) == 0xBE00) return decode_bkpt(pc, instr, decoded);
+        if ((inst & 0xFF80) == 0xB000) return decode_add_sp(instr, decoded);
+        if ((inst & 0xFF80) == 0xB080) return decode_sub_sp(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB200) return decode_sxth(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB240) return decode_sxtb(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB280) return decode_uxth(instr, decoded);
+        if ((inst & 0xFFC0) == 0xB2C0) return decode_uxtb(instr, decoded);
+        if ((inst & 0xFE00) == 0xB400) return decode_push(instr, decoded);
+        if ((inst & 0xFFF7) == 0xB650) return decode_setend(instr, decoded);
+        if (inst == 0xB662) return decode_cpsie(instr, decoded);
+        if (inst == 0xB672) return decode_cpsid(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBA00) return decode_rev(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBA40) return decode_rev16(instr, decoded);
+        if ((inst & 0xFFC0) == 0xBAC0) return decode_revsh(instr, decoded);
+        if ((inst & 0xFE00) == 0xBC00) return decode_pop(instr, decoded);
+        if ((inst & 0xFF00) == 0xBE00) return decode_bkpt(instr, decoded);
         if ((inst & 0xFF0F) == 0xBF00) {
             switch (inst) {
-            case 0xBF10: return decode_yield(pc, instr, decoded);
-            case 0xBF20: return decode_wfe(pc, instr, decoded);
-            case 0xBF30: return decode_wfi(pc, instr, decoded);
-            case 0xBF40: return decode_sev(pc, instr, decoded);
-            default: return decode_nop(pc, instr, decoded);
+            case 0xBF10: return decode_yield(instr, decoded);
+            case 0xBF20: return decode_wfe(instr, decoded);
+            case 0xBF30: return decode_wfi(instr, decoded);
+            case 0xBF40: return decode_sev(instr, decoded);
+            default: return decode_nop(instr, decoded);
             }
         }
         break;
     case 0xC000:
-        if ((inst & 0xF800) == 0xC000) return decode_stmia(pc, instr, decoded);
-        if ((inst & 0xF800) == 0xC800) return decode_ldmia(pc, instr, decoded);
+        if ((inst & 0xF800) == 0xC000) return decode_stmia(instr, decoded);
+        if ((inst & 0xF800) == 0xC800) return decode_ldmia(instr, decoded);
         break;
     case 0xD000:
-        if ((inst & 0xFF00) == 0xDE00) return decode_udf(pc, instr, decoded);
+        if ((inst & 0xFF00) == 0xDE00) return decode_udf(instr, decoded);
         switch ((inst >> 8) & 15) {
-        case 0x0: return decode_beq(pc, instr, decoded);
-        case 0x1: return decode_bne(pc, instr, decoded);
-        case 0x2: return decode_bcs(pc, instr, decoded);
-        case 0x3: return decode_bcc(pc, instr, decoded);
-        case 0x4: return decode_bmi(pc, instr, decoded);
-        case 0x5: return decode_bpl(pc, instr, decoded);
-        case 0x6: return decode_bvs(pc, instr, decoded);
-        case 0x7: return decode_bvc(pc, instr, decoded);
-        case 0x8: return decode_bhi(pc, instr, decoded);
-        case 0x9: return decode_bls(pc, instr, decoded);
-        case 0xA: return decode_bge(pc, instr, decoded);
-        case 0xB: return decode_blt(pc, instr, decoded);
-        case 0xC: return decode_bgt(pc, instr, decoded);
-        case 0xD: return decode_ble(pc, instr, decoded);
+        case 0x0: return decode_beq(instr, decoded);
+        case 0x1: return decode_bne(instr, decoded);
+        case 0x2: return decode_bcs(instr, decoded);
+        case 0x3: return decode_bcc(instr, decoded);
+        case 0x4: return decode_bmi(instr, decoded);
+        case 0x5: return decode_bpl(instr, decoded);
+        case 0x6: return decode_bvs(instr, decoded);
+        case 0x7: return decode_bvc(instr, decoded);
+        case 0x8: return decode_bhi(instr, decoded);
+        case 0x9: return decode_bls(instr, decoded);
+        case 0xA: return decode_bge(instr, decoded);
+        case 0xB: return decode_blt(instr, decoded);
+        case 0xC: return decode_bgt(instr, decoded);
+        case 0xD: return decode_ble(instr, decoded);
         }
-        if ((inst & 0xFF00) == 0xDF00) return decode_svc(pc, instr, decoded);
+        if ((inst & 0xFF00) == 0xDF00) return decode_svc(instr, decoded);
         break;
     case 0xE000:
-        if ((inst & 0xF800) == 0xE000) return decode_b(pc, instr, decoded);
+        if ((inst & 0xF800) == 0xE000) return decode_b(instr, decoded);
         break;
     }
-    return invalid_instruction(pc, inst, 0);
+    decoded->operand = instr;
+    return execute_invalid;
 }
 
 int execute ( void )
@@ -4584,43 +4503,10 @@ int execute ( void )
 
 
     const unsigned int address = pc - 2;
-    // Exclude the end of the ROM region where a wide fetch would cross
-    // into unmapped memory, even if a ROM mirror already filled the slot.
-    const int cacheable = address < 0x0FFFFFFEu &&
-                          !DBUG && !DBUGFETCH && !DBUGREG && !DISS && !output_vcd;
-    DecodedInstruction scratch;
-    DecodedInstruction *decoded = &scratch;
-    unsigned int tag = 0;
-
-    if (cacheable) {
-        const unsigned int halfword = (address & ROMADDMASK) >> 1;
-        const unsigned int high = halfword >> CACHE_BITS;
-        const unsigned int idx = (halfword ^ high) & (CACHE_SIZE - 1);
-        decoded = &cache[idx];
-        tag = high | CACHE_VALID;
-
-        if ((decoded->tag & ~CACHE_WIDE) == tag) {
-            const unsigned int width = (decoded->tag & CACHE_WIDE) ? 2 : 1;
-#if CACHE_STATS
-            cache_hits++;
+    DecodedInstruction decoded;
+#if PAGE_STATS
+    single_instructions++;
 #endif
-            fetches += width;
-            clks += width;
-            instructions++;
-            pc += 2;
-            reg_norm[15] = pc & ~1u;
-            return decoded->execute(pc, decoded);
-        }
-
-#if CACHE_STATS
-        cache_misses++;
-#endif
-    } else {
-#if CACHE_STATS
-        uncached_instructions++;
-#endif
-    }
-
     const unsigned int inst = fetch16(address);
     clks++;
     pc += 2;
@@ -4641,29 +4527,266 @@ int execute ( void )
     }
 
     instructions++;
-    // Invalidate before decoding so unsupported encodings never leave a hit
-    // pointing at a previous instruction in this slot.
-    decoded->tag = 0;
-    decoded->execute = NULL;
-
-    int result;
+    unsigned int instr = inst;
     if (inst >= 0xE800) {
         const unsigned int second = fetch16(pc - 2);
         clks++;
         if (DISS) fprintf(stderr, "0x%04X ", second);
-        result = decode_wide(pc, inst | (second << 16), decoded);
-        tag |= CACHE_WIDE;
-    } else {
-        result = decode_narrow(pc, inst, decoded);
+        instr |= second << 16;
     }
-
-    if (cacheable && decoded->execute)
-        decoded->tag = tag;
+    InstructionExecutor func = inst >= 0xE800 ? decode_wide(instr, &decoded)
+                                              : decode_narrow(instr, &decoded);
+    int result = func(pc, &decoded);
 
     if (DISS && result == 0)
         fprintf(stderr, sym ? " ; %s\n" : "\n", sym);
     return result == NO_TRACE_SUFFIX ? 0 : result;
 }
+
+// Leave the final mapped page on the single-step path so a wide fetch at
+// the last halfword still reports the unmapped second halfword.
+static int page_address(unsigned int address)
+{
+    return address < 0x10000000u - CODE_PAGE_BYTES;
+}
+
+static int interrupt_due(void)
+{
+    return systick_pending && can_take_exception(EXCEPTION_SYSTICK);
+}
+
+static int decode_current_page(unsigned int pc, const DecodedInstruction *current)
+{
+    // pc is four bytes ahead of the current instruction during execution.
+    const unsigned int address = (pc - 4) & ROMADDMASK;
+    const unsigned int base = address & ~(CODE_PAGE_BYTES - 1u);
+    CodePage *page = code_pages[base / CODE_PAGE_BYTES];
+
+    // Decode each possible halfword entry point independently. A branch can
+    // target any halfword. A wide instruction may end on the next page.
+    for (unsigned int slot = 0; slot < PAGE_SLOTS; ++slot) {
+        const unsigned int halfword = base / 2 + slot;
+        const unsigned int first = rom[halfword];
+        DecodedInstruction *decoded = &page->decoded[slot];
+
+        if (first >= 0xE800) {
+            const unsigned int second = rom[(halfword + 1) & (ROMSIZE / 2 - 1u)];
+            decoded->width = 2;
+            page->func[slot] = decode_wide(first | (second << 16), decoded);
+        } else {
+            decoded->width = 1;
+            page->func[slot] = decode_narrow(first, decoded);
+        }
+    }
+#if PAGE_STATS
+    pages_decoded++;
+#endif
+
+    const unsigned int slot = (address - base) / 2;
+    fetches += current->width;
+    clks += current->width;
+    return page->func[slot](pc, current);
+}
+
+static CodePage *get_code_page(unsigned int base)
+{
+    const unsigned int index = (base & ROMADDMASK) / CODE_PAGE_BYTES;
+    CodePage *page = code_pages[index];
+
+    if (!page) {
+        page = calloc(1, sizeof(*page));
+        if (!page) {
+            fprintf(stderr, "Unable to allocate decoded code page\n");
+            exit(1);
+        }
+        for (unsigned int slot = 0; slot < PAGE_SLOTS; ++slot)
+            page->func[slot] = decode_current_page;
+        code_pages[index] = page;
+    }
+    return page;
+}
+
+static int execute_page(void)
+{
+    unsigned int address = reg_norm[15] - 2;
+    unsigned int base;
+    CodePage *page;
+    InstructionExecutor *func;
+    const DecodedInstruction *decoded;
+
+transfer:
+    // Same-page branches restart at their target slot. Cross-page branches
+    // select the target page here without nesting calls to execute_page().
+    base = address & ~(CODE_PAGE_BYTES - 1u);
+    page = get_code_page(base);
+    func = page->func;
+    decoded = page->decoded;
+
+dispatch:
+    switch ((address - base) / 2) {
+    case 0: goto slot_0;
+    case 1: goto slot_1;
+    case 2: goto slot_2;
+    case 3: goto slot_3;
+    case 4: goto slot_4;
+    case 5: goto slot_5;
+    case 6: goto slot_6;
+    case 7: goto slot_7;
+    case 8: goto slot_8;
+    case 9: goto slot_9;
+    case 10: goto slot_10;
+    case 11: goto slot_11;
+    case 12: goto slot_12;
+    case 13: goto slot_13;
+    case 14: goto slot_14;
+    case 15: goto slot_15;
+    case 16: goto slot_16;
+    case 17: goto slot_17;
+    case 18: goto slot_18;
+    case 19: goto slot_19;
+    case 20: goto slot_20;
+    case 21: goto slot_21;
+    case 22: goto slot_22;
+    case 23: goto slot_23;
+    case 24: goto slot_24;
+    case 25: goto slot_25;
+    case 26: goto slot_26;
+    case 27: goto slot_27;
+    case 28: goto slot_28;
+    case 29: goto slot_29;
+    case 30: goto slot_30;
+    case 31: goto slot_31;
+#if CODE_PAGE_BYTES == 128
+    case 32: goto slot_32;
+    case 33: goto slot_33;
+    case 34: goto slot_34;
+    case 35: goto slot_35;
+    case 36: goto slot_36;
+    case 37: goto slot_37;
+    case 38: goto slot_38;
+    case 39: goto slot_39;
+    case 40: goto slot_40;
+    case 41: goto slot_41;
+    case 42: goto slot_42;
+    case 43: goto slot_43;
+    case 44: goto slot_44;
+    case 45: goto slot_45;
+    case 46: goto slot_46;
+    case 47: goto slot_47;
+    case 48: goto slot_48;
+    case 49: goto slot_49;
+    case 50: goto slot_50;
+    case 51: goto slot_51;
+    case 52: goto slot_52;
+    case 53: goto slot_53;
+    case 54: goto slot_54;
+    case 55: goto slot_55;
+    case 56: goto slot_56;
+    case 57: goto slot_57;
+    case 58: goto slot_58;
+    case 59: goto slot_59;
+    case 60: goto slot_60;
+    case 61: goto slot_61;
+    case 62: goto slot_62;
+    case 63: goto slot_63;
+#endif
+    }
+    return 0;
+
+// A slot has a fixed offset and fixed operand index. Straight-line code
+// falls through to the next call. The checks preserve per-instruction
+// timing, interrupt delivery, input polling, and changes to the PC.
+#define RUN_SLOT(n)                                                           \
+    slot_##n: {                                                               \
+        const unsigned int pc = base + 2 * (n) + 4;                           \
+        const unsigned long previous_clks = clks;                             \
+        fetches += decoded[n].width;                                          \
+        clks += decoded[n].width;                                             \
+        COUNT_PAGE_INSTRUCTION();                                             \
+        instructions++;                                                       \
+        reg_norm[15] = pc;                                                    \
+        if (func[n](pc, &decoded[n])) return 1;                               \
+        advance_systick(clks - previous_clks);                                \
+        if (waiting != NoWait || (instructions & 0x7F) == 0 || interrupt_due())\
+            return 0;                                                         \
+        if (reg_norm[15] != pc) goto redirected;                              \
+    }
+
+    RUN_SLOT(0);
+    RUN_SLOT(1);
+    RUN_SLOT(2);
+    RUN_SLOT(3);
+    RUN_SLOT(4);
+    RUN_SLOT(5);
+    RUN_SLOT(6);
+    RUN_SLOT(7);
+    RUN_SLOT(8);
+    RUN_SLOT(9);
+    RUN_SLOT(10);
+    RUN_SLOT(11);
+    RUN_SLOT(12);
+    RUN_SLOT(13);
+    RUN_SLOT(14);
+    RUN_SLOT(15);
+    RUN_SLOT(16);
+    RUN_SLOT(17);
+    RUN_SLOT(18);
+    RUN_SLOT(19);
+    RUN_SLOT(20);
+    RUN_SLOT(21);
+    RUN_SLOT(22);
+    RUN_SLOT(23);
+    RUN_SLOT(24);
+    RUN_SLOT(25);
+    RUN_SLOT(26);
+    RUN_SLOT(27);
+    RUN_SLOT(28);
+    RUN_SLOT(29);
+    RUN_SLOT(30);
+    RUN_SLOT(31);
+#if CODE_PAGE_BYTES == 128
+    RUN_SLOT(32);
+    RUN_SLOT(33);
+    RUN_SLOT(34);
+    RUN_SLOT(35);
+    RUN_SLOT(36);
+    RUN_SLOT(37);
+    RUN_SLOT(38);
+    RUN_SLOT(39);
+    RUN_SLOT(40);
+    RUN_SLOT(41);
+    RUN_SLOT(42);
+    RUN_SLOT(43);
+    RUN_SLOT(44);
+    RUN_SLOT(45);
+    RUN_SLOT(46);
+    RUN_SLOT(47);
+    RUN_SLOT(48);
+    RUN_SLOT(49);
+    RUN_SLOT(50);
+    RUN_SLOT(51);
+    RUN_SLOT(52);
+    RUN_SLOT(53);
+    RUN_SLOT(54);
+    RUN_SLOT(55);
+    RUN_SLOT(56);
+    RUN_SLOT(57);
+    RUN_SLOT(58);
+    RUN_SLOT(59);
+    RUN_SLOT(60);
+    RUN_SLOT(61);
+    RUN_SLOT(62);
+    RUN_SLOT(63);
+#endif
+#undef RUN_SLOT
+
+redirected:
+    address = reg_norm[15] - 2;
+    if ((address & ~(CODE_PAGE_BYTES - 1u)) == base) goto dispatch;
+    if (page_address(address)) goto transfer;
+    return 0;
+}
+
 //-------------------------------------------------------------------
 int reset ( void )
 {
@@ -4796,11 +4919,20 @@ int run ( void )
         {
             fprintf(fpvcd,"#%u\n",vcdcount++);
         }
+        if (page_address(reg_norm[15] - 2) && !interrupt_due() &&
+            !DBUG && !DBUGFETCH && !DBUGREG && !DISS && !output_vcd) {
+            if (execute_page()) break;
+            continue;
+        }
         previous_clks = clks;
         if (execute()) break;
         advance_systick(clks - previous_clks);
     }
     esp_close();
+    for (unsigned int i = 0; i < PAGE_COUNT; ++i) {
+        free(code_pages[i]);
+        code_pages[i] = NULL;
+    }
     dump_counters();
     return(0);
 }

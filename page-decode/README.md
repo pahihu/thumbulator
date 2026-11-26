@@ -1,53 +1,42 @@
-# Page-decoded Thumbulator
+# Thumbulator page runner code-size experiment
 
-`thumbulator.c` is a standalone version based on the split interpreter and [pahihu/thumbulator at f06a320](https://github.com/pahihu/thumbulator/commit/f06a320f05bc7493ac43dd680b4a40d53e4422d1).
+`thumbulator.c` keeps the existing page runner, including 128-byte pages by default, and outlines the SysTick reload and pending-interrupt priority checks into shared, out-of-line helpers. The normal per-instruction countdown stays inline. Decoded ROM pages are still kept for reuse, and interrupts are still checked at guest instruction boundaries. The source is based on the prior page-decoded version.
 
-This version defaults to 128-byte ROM pages (64 halfword slots). Define `CODE_PAGE_BYTES=64` for 32 slots. A cold page starts with every `func[]` entry pointing to `decode_current_page`. The first call decodes the entire page, installs each execution function and decoded operands, then executes the requested slot. Pages are allocated on demand and retained in a directory indexed by physical ROM page number. The 1,024-entry instruction cache is removed.
+`thumbulator-short-unroll.c` is an alternative using a smaller unroll factor over the same page. Define `PAGE_UNROLL=1`, `2`, `4`, `8`, or `16` to select it. This knob controls the number of duplicated dispatch sites. `CODE_PAGE_BYTES` still selects the size of the decoded page independently.
 
-`execute_page()` contains a fixed call for each slot. Sequential instructions fall through to the next call. A taken jump within the page resumes at its target slot. For a jump outside the page, the same runner selects the ROM target page and calls its entry, which decodes the new page if cold. The runner yields for RAM execution, host polling, wait instructions, and interrupt handling. Fetch and SysTick accounting still run at instruction boundaries. The decoder reads a wide instruction's second halfword from the next ROM page when required. Instruction tracing and writable RAM use the single-instruction path.
+The included ComsTime binary was run at 12 MHz simulated frequency. Tests used GCC 14.2.0 with `-O3` on a single logical CPU of an AMD EPYC 9V74. The host reports a 32 KiB L1 instruction cache. Instruction-cache miss counters were unavailable.
 
-## Cortex-M ComsTime
-
-Medians of eight runs per build on a single logical CPU of an AMD EPYC 9V74, using GCC 14.2.0 with `-O3` and the same POCC v181 firmware at 12 MHz simulated frequency. Execution order was balanced and statistics were collected in separate runs.
-
-| Build | Wall time | Process CPU time | Decoder storage on ComsTime | Host ELF .text |
-| --- | ---: | ---: | ---: | ---: |
-| Stock | 3.009 s | 2.999 s | 0 KiB | 43.44 KiB |
-| Previous split interpreter, 1,024 entries | 2.595 s | 2.579 s | 16 KiB | 53.75 KiB |
-| 64-byte pages | 1.891 s | 1.886 s | 197 KiB | 62.87 KiB |
-| 128-byte pages | 1.894 s | 1.889 s | 139 KiB | 74.00 KiB |
-
-The 128-byte build reduced median wall time by 27.0% versus the previous split interpreter and 37.1% versus stock. The two page sizes had similar timings. The 128-byte default uses less decoder storage on this workload, while the 64-byte build has a smaller host executable code section. Decoder storage includes the page directory and decoded pages, excluding allocator overhead. ComsTime decoded 138 pages at 64 bytes and 75 pages at 128 bytes. Both builds ran 172,566,394 instructions through the page runner and 54,820 through the single-instruction path.
-
-Every timed run produced identical guest output and simulated counters. The page-boundary fixture tests a wide `BL` across both page sizes, a backward branch, a return to another page, an indirect cross-page jump, and a skipped `UDF`. The system-instruction and writable-RAM fixtures match stock with and without disassembly. The page-boundary fixture also produces identical VCD output. Single-step checks matched stock across 209,910 combinations of opcode and initial state, with cold decode and predecoded replay.
-
-## Build and reproduce
+## Reproduce
 
 ```sh
-git clone https://github.com/pahihu/thumbulator.git thumb-study
-git -C thumb-study checkout f06a320f05bc7493ac43dd680b4a40d53e4422d1
-
-gcc -O3 -D_XOPEN_SOURCE=500 -pthread thumb-study/thumbulator.c -o stock
-gcc -O3 -D_XOPEN_SOURCE=500 -pthread thumbulator-split-1024.c -o split1024
-gcc -O3 -D_XOPEN_SOURCE=500 -pthread -DCODE_PAGE_BYTES=64 thumbulator.c -o page64
-gcc -O3 -D_XOPEN_SOURCE=500 -pthread thumbulator.c -o page128
-
-python3 benchmark.py --runs 8 --build stock=stock --build split1024=split1024 \
-    --build page64=page64 --build page128=page128 --output rerun.json
+gcc -O3 -D_XOPEN_SOURCE=500 -pthread thumbulator-original.c -o original
+gcc -O3 -D_XOPEN_SOURCE=500 -pthread thumbulator.c -o full-outline
+for n in 1 4 8 16; do
+    gcc -O3 -D_XOPEN_SOURCE=500 -pthread -DPAGE_UNROLL=$n thumbulator-short-unroll.c -o unroll-$n
+done
+python3 outline.py thumbulator-short-unroll.c short-outline.c
+gcc -O3 -D_XOPEN_SOURCE=500 -pthread short-outline.c -o short-outline
+python3 benchmark.py --runs 7 --build original=original --build unroll-1=unroll-1 \
+    --build unroll-4=unroll-4 --build unroll-8=unroll-8 --build unroll-16=unroll-16 \
+    --build full-outline=full-outline --build short-outline=short-outline --output rerun.json
 ```
 
-On Linux, use `taskset -c <cpu>` on the benchmark command to pin all runs. Build with `-DPAGE_STATS=1` to collect decoder storage and execution counts. The raw timings from the table are in `measurements.json`.
+Use `taskset -c <cpu>` to pin the benchmark on Linux. The benchmark verifies guest stdout, including simulated counters, on every run.
 
-```sh
-./page128 fixtures/page-boundary.bin </dev/null
-./page128 fixtures/system.bin </dev/null
-./page128 fixtures/ram.bin </dev/null
+## Results
 
-gcc -O3 -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=500 -pthread \
-    '-DEMULATOR="thumb-study/thumbulator.c"' check-step.c -o check-stock
-gcc -O3 -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=500 -pthread -DPAGED \
-    '-DEMULATOR="thumbulator.c"' check-step.c -o check-page
-./check-stock > stock-steps.txt
-./check-page > page-steps.txt
-cmp stock-steps.txt page-steps.txt
-```
+Median of seven runs per build with rotating execution order. Code size is the host ELF `.text` section.
+
+| Runner | Wall time | Process CPU time | Host code |
+| --- | ---: | ---: | ---: |
+| Original, 64 dispatch sites | 1.840 s | 1.831 s | 74.0 KiB |
+| 1 dispatch site | 1.770 s | 1.763 s | 51.3 KiB |
+| 4 dispatch sites | 1.740 s | 1.734 s | 52.4 KiB |
+| 8 dispatch sites | 1.820 s | 1.811 s | 54.1 KiB |
+| 16 dispatch sites | 1.813 s | 1.806 s | 57.0 KiB |
+| 64 dispatch sites, shared slow paths | 1.720 s | 1.714 s | 66.9 KiB |
+| 4 dispatch sites, shared slow paths | 1.731 s | 1.722 s | 51.9 KiB |
+
+The supplied primary version, with 64 dispatch sites and shared slow paths, took 6.5% less wall time than the original. The 4-site version with shared slow paths cut host code by 29.9% with a median 11 ms higher than the primary version. Profiles of hardware L1 misses were unavailable, so the timings establish the effect of the code changes under this workload.
+
+ComsTime output and guest counters matched across all builds. The system, writable RAM, and page-boundary fixtures matched with and without disassembly. Both versions with shared slow paths matched 209,910 single-step cases and the page-boundary VCD output. The primary version also matched ComsTime with 64-byte decoded pages.

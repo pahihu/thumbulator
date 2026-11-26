@@ -1,36 +1,56 @@
- 1 stock  wall 3.1836 s CPU 3.1738 s
- 1 split1024 wall 2.9310 s CPU 2.9192 s
- 1 page64 wall 2.1748 s CPU 2.1645 s
- 1 page128 wall 1.9281 s CPU 1.9205 s
- 2 split1024 wall 2.7428 s CPU 2.7364 s
- 2 page64 wall 1.8936 s CPU 1.8874 s
- 2 page128 wall 1.8993 s CPU 1.8921 s
- 2 stock  wall 3.1452 s CPU 3.1367 s
- 3 page64 wall 1.8928 s CPU 1.8897 s
- 3 page128 wall 1.8885 s CPU 1.8855 s
- 3 stock  wall 2.9473 s CPU 2.9442 s
- 3 split1024 wall 2.5111 s CPU 2.5082 s
- 4 page128 wall 1.8554 s CPU 1.8525 s
- 4 stock  wall 3.0089 s CPU 3.0043 s
- 4 split1024 wall 2.5918 s CPU 2.5778 s
- 4 page64 wall 1.8525 s CPU 1.8369 s
- 5 page128 wall 1.8408 s CPU 1.8287 s
- 5 page64 wall 1.9597 s CPU 1.9479 s
- 5 split1024 wall 2.6346 s CPU 2.6186 s
- 5 stock  wall 2.9383 s CPU 2.9198 s
- 6 stock  wall 3.0086 s CPU 2.9938 s
- 6 page128 wall 1.9271 s CPU 1.9203 s
- 6 page64 wall 1.8899 s CPU 1.8850 s
- 6 split1024 wall 2.5720 s CPU 2.5587 s
- 7 split1024 wall 2.5639 s CPU 2.5497 s
- 7 stock  wall 3.2944 s CPU 3.2589 s
- 7 page128 wall 1.9532 s CPU 1.9362 s
- 7 page64 wall 1.8491 s CPU 1.8280 s
- 8 page64 wall 1.8698 s CPU 1.8574 s
- 8 split1024 wall 2.5990 s CPU 2.5797 s
- 8 stock  wall 2.9456 s CPU 2.9327 s
- 8 page128 wall 1.8481 s CPU 1.8385 s
-stock cpu_seconds=2.999027 wall_seconds=3.008764
-split1024 cpu_seconds=2.578764 wall_seconds=2.595373
-page64 cpu_seconds=1.886204 wall_seconds=1.891333
-page128 cpu_seconds=1.888826 wall_seconds=1.893895
+ 1 original wall 1.8850 s CPU 1.8776 s
+ 1 unroll-1 wall 1.7700 s CPU 1.7629 s
+ 1 unroll-4 wall 1.7438 s CPU 1.7403 s
+ 1 unroll-8 wall 1.9112 s CPU 1.8902 s
+ 1 unroll-16 wall 1.8061 s CPU 1.7862 s
+ 1 full-outline wall 1.6709 s CPU 1.6529 s
+ 1 short-outline wall 1.7307 s CPU 1.7209 s
+ 2 unroll-1 wall 1.8899 s CPU 1.8813 s
+ 2 unroll-4 wall 1.7942 s CPU 1.7869 s
+ 2 unroll-8 wall 1.8601 s CPU 1.8529 s
+ 2 unroll-16 wall 1.8267 s CPU 1.8196 s
+ 2 full-outline wall 1.7173 s CPU 1.7137 s
+ 2 short-outline wall 1.7267 s CPU 1.7207 s
+ 2 original wall 1.8375 s CPU 1.8310 s
+ 3 unroll-4 wall 1.7405 s CPU 1.7336 s
+ 3 unroll-8 wall 1.8025 s CPU 1.7953 s
+ 3 unroll-16 wall 1.8125 s CPU 1.8064 s
+ 3 full-outline wall 1.7471 s CPU 1.7400 s
+ 3 short-outline wall 1.7282 s CPU 1.7217 s
+ 3 original wall 1.9351 s CPU 1.9308 s
+ 3 unroll-1 wall 1.7625 s CPU 1.7595 s
+ 4 unroll-8 wall 2.0515 s CPU 2.0474 s
+ 4 unroll-16 wall 1.9554 s CPU 1.9498 s
+ 4 full-outline wall 1.8181 s CPU 1.8137 s
+ 4 short-outline wall 1.9964 s CPU 1.9898 s
+ 4 original wall 1.9196 s CPU 1.9034 s
+ 4 unroll-1 wall 1.7877 s CPU 1.7836 s
+ 4 unroll-4 wall 1.7240 s CPU 1.7148 s
+ 5 unroll-16 wall 1.8047 s CPU 1.7950 s
+ 5 full-outline wall 1.6475 s CPU 1.6370 s
+ 5 short-outline wall 1.6621 s CPU 1.6531 s
+ 5 original wall 1.8315 s CPU 1.8205 s
+ 5 unroll-1 wall 1.7334 s CPU 1.7251 s
+ 5 unroll-4 wall 1.7673 s CPU 1.7638 s
+ 5 unroll-8 wall 1.8205 s CPU 1.8108 s
+ 6 full-outline wall 1.7199 s CPU 1.7126 s
+ 6 short-outline wall 1.7337 s CPU 1.7243 s
+ 6 original wall 1.8366 s CPU 1.8273 s
+ 6 unroll-1 wall 1.7274 s CPU 1.7190 s
+ 6 unroll-4 wall 1.7327 s CPU 1.7234 s
+ 6 unroll-8 wall 1.7804 s CPU 1.7770 s
+ 6 unroll-16 wall 1.7425 s CPU 1.7324 s
+ 7 short-outline wall 1.7520 s CPU 1.7427 s
+ 7 original wall 1.8397 s CPU 1.8304 s
+ 7 unroll-1 wall 1.8430 s CPU 1.8342 s
+ 7 unroll-4 wall 1.7294 s CPU 1.7214 s
+ 7 unroll-8 wall 1.8027 s CPU 1.7941 s
+ 7 unroll-16 wall 1.8177 s CPU 1.8102 s
+ 7 full-outline wall 1.7279 s CPU 1.7248 s
+original cpu_seconds=1.831018 wall_seconds=1.839662
+unroll-1 cpu_seconds=1.762925 wall_seconds=1.769987
+unroll-4 cpu_seconds=1.733575 wall_seconds=1.740493
+unroll-8 cpu_seconds=1.810780 wall_seconds=1.820466
+unroll-16 cpu_seconds=1.806428 wall_seconds=1.812509
+full-outline cpu_seconds=1.713658 wall_seconds=1.719919
+short-outline cpu_seconds=1.721673 wall_seconds=1.730707

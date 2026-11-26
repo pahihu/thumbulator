@@ -1735,22 +1735,30 @@ int handle_bkpt(unsigned int bp, unsigned int arg)
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
 //-------------------------------------------------------------------
-static void advance_systick(unsigned long ticks)
+// Reload arithmetic is reached only when a step reaches the end of a tick period.
+#if defined(__GNUC__)
+__attribute__((noinline, cold))
+#endif
+static void reload_systick(unsigned long ticks)
 {
-    unsigned int period = systick_reload + 1;
-
-    if (!(systick_ctrl & SYSTICK_ENABLE) || ticks == 0)
-        return;
-    if (ticks < systick_count) {
-        systick_count -= ticks;
-        return;
-    }
+    const unsigned int period = systick_reload + 1;
     if (systick_count != 0 || (systick_reload != 0 && ticks >= period)) {
         systick_ctrl |= SYSTICK_COUNTFLAG;
         if (systick_ctrl & SYSTICK_TICKINT)
             systick_pending = 1;
     }
     systick_count = (period - (ticks - systick_count) % period) % period;
+}
+
+static void advance_systick(unsigned long ticks)
+{
+    if (!(systick_ctrl & SYSTICK_ENABLE) || ticks == 0)
+        return;
+    if (ticks < systick_count) {
+        systick_count -= ticks;
+        return;
+    }
+    reload_systick(ticks);
 }
 
 static unsigned int read_special(unsigned int sysm)
@@ -4550,9 +4558,17 @@ static int page_address(unsigned int address)
     return address < 0x10000000u - CODE_PAGE_BYTES;
 }
 
+#if defined(__GNUC__)
+__attribute__((noinline, cold))
+#endif
+static int pending_systick_can_run(void)
+{
+    return can_take_exception(EXCEPTION_SYSTICK);
+}
+
 static int interrupt_due(void)
 {
-    return systick_pending && can_take_exception(EXCEPTION_SYSTICK);
+    return systick_pending && pending_systick_can_run();
 }
 
 static int decode_current_page(unsigned int pc, const DecodedInstruction *current)
